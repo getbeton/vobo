@@ -80,12 +80,23 @@ async function seed() {
   });
   const user = signUp.user;
 
-  const [ws] = await db
-    .insert(workspaces)
-    .values({ name: 'Beton Labs', slug: 'beton-labs', policyDefaults: {} })
-    .returning();
+  // Email verification is required to sign in, and nobody is going to click a
+  // link for a seeded account — so the seed asserts the address itself.
+  await db
+    .update(userTable)
+    .set({ emailVerified: true })
+    .where(eqOp(userTable.id, user.id));
 
-  await db.insert(workspaceMembers).values({ userId: user.id, workspaceId: ws.id, role: 'admin' });
+  // Signup already created a workspace (the user-create hook guarantees one).
+  // Adopt it rather than inserting a second, or the seeded account lands in two.
+  const membership = await db.query.workspaceMembers.findFirst({
+    where: eqOp(workspaceMembers.userId, user.id),
+  });
+  const [ws] = await db
+    .update(workspaces)
+    .set({ name: 'Beton Labs', slug: 'beton-labs', policyDefaults: {} })
+    .where(eqOp(workspaces.id, membership!.workspaceId))
+    .returning();
 
   const [project] = await db
     .insert(projects)

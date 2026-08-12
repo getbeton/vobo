@@ -1,8 +1,10 @@
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from 'better-auth/adapters/drizzle';
 import { nextCookies } from 'better-auth/next-js';
+import { magicLink } from 'better-auth/plugins';
 import { db } from '@/lib/db/drizzle';
 import { user, session, account, verification } from '@/lib/db/schema';
+import { sendMail, magicLinkMail, verificationMail } from '@/lib/email/send';
 
 /**
  * Google sign-in is per-deployment: each environment gets its own OAuth client
@@ -23,6 +25,17 @@ export const auth = betterAuth({
   baseURL: process.env.BETTER_AUTH_URL,
   emailAndPassword: {
     enabled: true,
+    // Ownership of the address must be proven before the account is usable.
+    // Without this, anyone can register an address they do not own and sit on
+    // it — which is the squatting case lib/auth/linking.ts exists to survive.
+    requireEmailVerification: true,
+  },
+  emailVerification: {
+    sendOnSignUp: true,
+    autoSignInAfterVerification: true,
+    sendVerificationEmail: async ({ user: recipient, url }) => {
+      await sendMail(verificationMail(recipient.email, url));
+    },
   },
   socialProviders: googleAuthEnabled
     ? {
@@ -83,7 +96,17 @@ export const auth = betterAuth({
   },
   // nextCookies must be last: makes auth.api.* calls inside server actions
   // set/clear cookies correctly.
-  plugins: [nextCookies()],
+  plugins: [
+    // Magic link is the preferred email path. Opening the link proves control
+    // of the mailbox, so it authenticates and verifies in one step — there is
+    // no unproven-address window and no password to plant or leak.
+    magicLink({
+      sendMagicLink: async ({ email, url }) => {
+        await sendMail(magicLinkMail(email, url));
+      },
+    }),
+    nextCookies(),
+  ],
 });
 
 export type AuthSession = typeof auth.$Infer.Session;

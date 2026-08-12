@@ -7,10 +7,13 @@ import { user as userTable, account as accountTable, activityLogs, ActivityType 
  * (VOBO-168).
  *
  * Linking by email is the whole point — the same human should not end up as two
- * users — but it carries one specific attack. Anyone can register an
- * email/password account for an address they do not own, because nothing proves
- * ownership at signup. If the real owner later signs in with Google and we link
- * the identities, the squatter's password now opens the owner's account.
+ * users — but it carries one specific attack. Registering an email/password
+ * account for an address you do not own is now blocked at the front door
+ * (`requireEmailVerification`, plus magic link as the preferred email path), so
+ * this is defence in depth for the accounts that predate that: rows created
+ * before verification was switched on are still sitting there unverified. If
+ * the real owner signs in with Google and we link the identities, the
+ * squatter's password would open the owner's account.
  *
  * Google has actually verified the address; the local password never was. So on
  * linking Google into an account whose email is unverified, the unproven

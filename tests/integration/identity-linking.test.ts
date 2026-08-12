@@ -63,13 +63,20 @@ describe('email normalisation', () => {
   it('treats a different case as the SAME account, not a second one', async () => {
     const email = freshEmail();
     await signUpEmail(email);
-    await expect(
-      auth.api.signUpEmail({
+
+    // With verification required, re-submitting an unverified address re-sends
+    // the link rather than erroring — deliberate, it avoids telling a stranger
+    // which addresses have accounts. What must hold is that no SECOND row
+    // appears for the same human.
+    await auth.api
+      .signUpEmail({
         body: { email: email.toUpperCase(), password: 'correct-horse-battery', name: 'Dup' },
       })
-    ).rejects.toThrow();
+      .catch(() => undefined);
+
     const all = await db.select().from(userTable);
     expect(all).toHaveLength(1);
+    expect(all[0].email).toBe(email.toLowerCase());
   });
 
   it('does NOT collapse dots or +tags — those are one provider’s convention', async () => {

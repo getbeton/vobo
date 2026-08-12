@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useActionState } from 'react';
+import { useActionState, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -10,6 +10,7 @@ import { CircleIcon, Loader2 } from 'lucide-react';
 import { signIn, signUp } from './actions';
 import { ActionState } from '@/lib/auth/middleware';
 import { GoogleButton } from '@/components/auth/GoogleButton';
+import { MagicLinkForm } from '@/components/auth/MagicLinkForm';
 
 export function Login({
   mode = 'signin',
@@ -22,6 +23,7 @@ export function Login({
   const redirect = searchParams.get('redirect');
   const priceId = searchParams.get('priceId');
   const inviteId = searchParams.get('inviteId');
+  const [showPassword, setShowPassword] = useState(false);
   const [state, formAction, pending] = useActionState<ActionState, FormData>(
     mode === 'signin' ? signIn : signUp,
     { error: '' }
@@ -41,20 +43,23 @@ export function Login({
       </div>
 
       <div className="mt-8 sm:mx-auto sm:w-full sm:max-w-md">
-        {googleEnabled && (
-          <div className="mb-6 space-y-6">
-            <GoogleButton redirectTo={redirect || '/welcome'} />
-            <div className="relative">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-gray-300" />
-              </div>
-              <div className="relative flex justify-center text-sm">
-                <span className="px-2 bg-gray-50 text-gray-500">or with email</span>
-              </div>
-            </div>
-          </div>
-        )}
-        <form className="space-y-6" action={formAction}>
+        <div className="mb-6 space-y-6">
+          {googleEnabled && <GoogleButton redirectTo={redirect || '/welcome'} />}
+          <MagicLinkForm mode={mode} redirectTo={redirect || '/welcome'} />
+          <button
+            type="button"
+            onClick={() => setShowPassword((v) => !v)}
+            className="w-full text-center text-sm text-gray-500 hover:text-gray-700 underline"
+          >
+            {showPassword ? 'Hide password sign-in' : 'Use a password instead'}
+          </button>
+        </div>
+
+        <form
+          className="space-y-6"
+          action={formAction}
+          style={{ display: showPassword ? undefined : 'none' }}
+        >
           <input type="hidden" name="redirect" value={redirect || ''} />
           <input type="hidden" name="priceId" value={priceId || ''} />
           <input type="hidden" name="inviteId" value={inviteId || ''} />
