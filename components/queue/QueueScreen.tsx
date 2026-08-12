@@ -1,0 +1,437 @@
+'use client';
+
+import { useEffect, useState, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
+import { claimAction, releaseAction } from '@/lib/actions/review';
+
+/**
+ * Reviewer Queue — verbatim port of the prototype's queue screen:
+ * ranked list caption tooltip, Next-up card (Proceed ↵), rows with SLA badge /
+ * version badge ("v2 returned — N persisting", loud) / sticky chip / lease
+ * note (dimmed, never hidden), "Queue clear" empty state.
+ * Keys: J/K focus · Enter/N claim · R release own lease.
+ */
+
+export interface QueueRowData {
+  id: string;
+  title: string;
+  round: number;
+  status: string;
+  slaDueAt: string | null;
+  priority: number;
+  sticky: boolean;
+  persisting: number;
+  rankRationale: string;
+  lease: { mine: boolean; expiresAt: string } | null;
+}
+
+function slaBadge(slaDueAt: string | null): { text: string; style: React.CSSProperties } {
+  const base: React.CSSProperties = {
+    fontSize: 11,
+    borderRadius: 9999,
+    padding: '1px 8px',
+    fontWeight: 600,
+    whiteSpace: 'nowrap',
+  };
+  if (!slaDueAt) return { text: 'no SLA', style: { ...base, background: 'var(--slate-100)', color: 'var(--slate-500)' } };
+  const ms = new Date(slaDueAt).getTime() - Date.now();
+  const h = Math.floor(Math.abs(ms) / 3_600_000);
+  const m = Math.floor((Math.abs(ms) % 3_600_000) / 60_000);
+  const label = ms < 0 ? `overdue ${h}h` : h > 0 ? `${h}h ${m}m` : `${m}m`;
+  if (ms < 0) return { text: label, style: { ...base, background: 'var(--red-100)', color: 'var(--red-900)' } };
+  if (ms < 4 * 3_600_000)
+    return { text: label, style: { ...base, background: 'var(--amber-100)', color: 'var(--amber-900)' } };
+  return { text: label, style: { ...base, background: 'var(--green-100)', color: 'var(--green-900)' } };
+}
+
+function versionBadge(round: number, persisting: number) {
+  if (round <= 1)
+    return (
+      <span
+        style={{
+          fontSize: 11,
+          color: 'var(--slate-500)',
+          background: 'var(--slate-100)',
+          borderRadius: 9999,
+          padding: '1px 8px',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        v1
+      </span>
+    );
+  const loud = persisting > 0;
+  return (
+    <span
+      style={{
+        fontSize: 11,
+        fontWeight: 600,
+        color: loud ? 'var(--red-900)' : 'var(--slate-600)',
+        background: loud ? 'var(--red-100)' : 'var(--slate-100)',
+        borderRadius: 9999,
+        padding: '1px 8px',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {loud ? `v${round} returned — ${persisting} persisting` : `v${round} returned`}
+    </span>
+  );
+}
+
+export function QueueScreen({
+  rows,
+  nextUp,
+  noQueue,
+}: {
+  rows: QueueRowData[];
+  nextUp: QueueRowData | null;
+  noQueue: boolean;
+}) {
+  const router = useRouter();
+  const [focusIdx, setFocusIdx] = useState(0);
+  const [tipRank, setTipRank] = useState(false);
+  const [tipNext, setTipNext] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [, startTransition] = useTransition();
+
+  const openOrClaim = (row: QueueRowData) => {
+    setError(null);
+    startTransition(async () => {
+      if (row.lease?.mine || row.status === 'claimed') {
+        router.push(`/review/${row.id}`);
+        return;
+      }
+      const res = await claimAction(row.id);
+      if (res.ok) {
+        router.push(`/review/${row.id}`);
+      } else if (res.code === 'claim_race' || res.code === 'not_claimable') {
+        setError('Claimed by another reviewer just now');
+        setFocusIdx((i) => Math.min(i + 1, rows.length - 1));
+        router.refresh();
+      } else {
+        setError(res.error);
+      }
+    });
+  };
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement)?.closest('input,textarea')) return;
+      if (e.key === 'j' || e.key === 'J') setFocusIdx((i) => Math.min(i + 1, rows.length - 1));
+      if (e.key === 'k' || e.key === 'K') setFocusIdx((i) => Math.max(i - 1, 0));
+      if (e.key === 'Enter') {
+        const row = rows[focusIdx];
+        if (row) openOrClaim(row);
+      }
+      if ((e.key === 'n' || e.key === 'N') && nextUp) openOrClaim(nextUp);
+      if ((e.key === 'r' || e.key === 'R')) {
+        const row = rows[focusIdx];
+        if (row?.lease?.mine) {
+          startTransition(async () => {
+            await releaseAction(row.id);
+            router.refresh();
+          });
+        }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, focusIdx, nextUp]);
+
+  if (noQueue) {
+    return (
+      <div style={{ padding: '28px 32px' }}>
+        <div
+          style={{
+            border: '1px dashed var(--border)',
+            borderRadius: 12,
+            padding: 48,
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: 10,
+            background: '#fff',
+            maxWidth: 880,
+            margin: '0 auto',
+          }}
+        >
+          <span style={{ fontWeight: 600, fontSize: 15 }}>No queues here yet</span>
+          <span style={{ fontSize: 13, color: 'var(--slate-500)' }}>
+            The pipeline hasn’t registered a queue in this project — queues appear via the API.
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '28px 32px' }}>
+      <div style={{ maxWidth: 880, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 18, fontWeight: 600 }}>Reviewer queue</span>
+          <span style={{ position: 'relative', display: 'inline-flex' }}>
+            <span
+              onMouseEnter={() => setTipRank(true)}
+              onMouseLeave={() => setTipRank(false)}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 20,
+                height: 20,
+                border: '1px solid var(--border)',
+                borderRadius: 9999,
+                fontSize: 11,
+                color: 'var(--slate-500)',
+                cursor: 'default',
+              }}
+            >
+              ?
+            </span>
+            {tipRank && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 26,
+                  left: -10,
+                  width: 320,
+                  background: 'var(--slate-900)',
+                  color: 'var(--slate-50)',
+                  borderRadius: 8,
+                  padding: '10px 12px',
+                  fontSize: 12,
+                  lineHeight: 1.55,
+                  zIndex: 50,
+                  boxShadow: 'var(--shadow-md)',
+                }}
+              >
+                Ranked by queue policy — SLA first, then priority, then judge confidence ascending.
+                Reviewers never configure sorting; rank is the recommendation.
+              </div>
+            )}
+          </span>
+        </div>
+
+        {error && (
+          <div
+            style={{
+              border: '1px solid var(--amber-500)',
+              background: 'var(--amber-50)',
+              color: 'var(--amber-900)',
+              borderRadius: 8,
+              padding: '8px 12px',
+              fontSize: 13,
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        {nextUp && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
+              <span
+                style={{
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: 'var(--blue-700)',
+                  textTransform: 'uppercase',
+                  letterSpacing: '.05em',
+                }}
+              >
+                Next up
+              </span>
+              <span style={{ position: 'relative', display: 'inline-flex' }}>
+                <span
+                  onMouseEnter={() => setTipNext(true)}
+                  onMouseLeave={() => setTipNext(false)}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    width: 18,
+                    height: 18,
+                    border: '1px solid var(--border)',
+                    borderRadius: 9999,
+                    fontSize: 10,
+                    color: 'var(--slate-500)',
+                    cursor: 'default',
+                  }}
+                >
+                  ?
+                </span>
+                {tipNext && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 24,
+                      left: -10,
+                      width: 300,
+                      background: 'var(--slate-900)',
+                      color: 'var(--slate-50)',
+                      borderRadius: 8,
+                      padding: '10px 12px',
+                      fontSize: 12,
+                      lineHeight: 1.55,
+                      zIndex: 50,
+                      boxShadow: 'var(--shadow-md)',
+                    }}
+                  >
+                    {nextUp.rankRationale}
+                  </div>
+                )}
+              </span>
+            </div>
+            <div
+              style={{
+                border: '1px solid var(--blue-200)',
+                background: '#fff',
+                borderRadius: 12,
+                padding: '16px 20px',
+                boxShadow: 'var(--shadow-sm)',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 16,
+              }}
+            >
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+                  <span style={slaBadge(nextUp.slaDueAt).style}>{slaBadge(nextUp.slaDueAt).text}</span>
+                  <span
+                    style={{
+                      fontWeight: 600,
+                      fontSize: 14,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {nextUp.title}
+                  </span>
+                  {versionBadge(nextUp.round, nextUp.persisting)}
+                  {nextUp.sticky && (
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--blue-700)',
+                        background: 'var(--blue-50)',
+                        borderRadius: 9999,
+                        padding: '1px 8px',
+                        fontWeight: 500,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      returning to you
+                    </span>
+                  )}
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => openOrClaim(nextUp)}
+                className="ds-btn ds-btn--default"
+                style={{ minWidth: 130 }}
+              >
+                Proceed
+                <span
+                  style={{
+                    fontSize: 11,
+                    background: 'rgba(255,255,255,.22)',
+                    borderRadius: 5,
+                    padding: '1px 6px',
+                  }}
+                >
+                  ↵
+                </span>
+              </button>
+            </div>
+          </>
+        )}
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {rows.map((row, i) => {
+            const heldByOther = row.lease && !row.lease.mine;
+            const leaseMinutes = row.lease
+              ? Math.max(0, Math.round((new Date(row.lease.expiresAt).getTime() - Date.now()) / 60000))
+              : 0;
+            return (
+              <div
+                key={row.id}
+                onClick={() => openOrClaim(row)}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  border: i === focusIdx ? '1px solid var(--blue-400)' : '1px solid var(--border)',
+                  background: '#fff',
+                  borderRadius: 10,
+                  padding: '12px 16px',
+                  cursor: 'pointer',
+                  opacity: heldByOther ? 0.55 : 1,
+                }}
+              >
+                <span style={slaBadge(row.slaDueAt).style}>{slaBadge(row.slaDueAt).text}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
+                  <span
+                    style={{
+                      fontWeight: 500,
+                      whiteSpace: 'nowrap',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                    }}
+                  >
+                    {row.title}
+                  </span>
+                  {versionBadge(row.round, row.persisting)}
+                  {row.sticky && (
+                    <span
+                      style={{
+                        fontSize: 11,
+                        color: 'var(--blue-700)',
+                        background: 'var(--blue-50)',
+                        borderRadius: 9999,
+                        padding: '1px 8px',
+                        fontWeight: 500,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      returning to you
+                    </span>
+                  )}
+                </div>
+                <span style={{ fontSize: 12, color: 'var(--slate-500)', whiteSpace: 'nowrap' }}>
+                  {row.lease
+                    ? row.lease.mine
+                      ? `your lease · ${leaseMinutes}m left`
+                      : `in review · lease ${leaseMinutes}m left`
+                    : `P${row.priority}`}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        {rows.length === 0 && (
+          <div
+            style={{
+              border: '1px dashed var(--border)',
+              borderRadius: 12,
+              padding: 48,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              gap: 10,
+              background: '#fff',
+            }}
+          >
+            <span style={{ fontWeight: 600, fontSize: 15 }}>Queue clear</span>
+            <span style={{ fontSize: 13, color: 'var(--slate-500)' }}>
+              Nothing awaiting review in this queue · switch queues in the breadcrumb
+            </span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

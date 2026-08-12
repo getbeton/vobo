@@ -1,0 +1,16 @@
+/* Beton Council design system — vendored VERBATIM from the Claude Design
+ * project (claude.ai/design p/be7a8174-68cf-4168-b81a-5894ba7097ff,
+ * _ds/vobo-design-system-92eab0be). Do not restyle; the interactive prototype
+ * in design/vobo-review-station.dc.html is the normative UI reference.
+ * fonts.css is intentionally NOT imported — Inter loads via next/font. */
+@import './tokens/colors.css';
+@import './tokens/typography.css';
+@import './tokens/spacing.css';
+@import './tokens/radius.css';
+@import './tokens/shadows.css';
+@import './components/base.css';
+@import './components/forms/forms.css';
+@import './components/feedback/feedback.css';
+@import './components/data-display/data-display.css';
+@import './components/navigation/navigation.css';
+@import './components/overlays/overlays.css';

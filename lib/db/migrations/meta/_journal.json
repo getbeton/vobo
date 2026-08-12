@@ -5,8 +5,15 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1726443359662,
-      "tag": "0000_soft_the_anarchist",
+      "when": 1786510741816,
+      "tag": "0000_fluffy_karnak",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786525250406,
+      "tag": "0001_perfect_magneto",
       "breakpoints": true
     }
   ]

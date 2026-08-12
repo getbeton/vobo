@@ -1,0 +1,1 @@
+ALTER TABLE "queues" ADD COLUMN "policy_overrides" jsonb DEFAULT '{}'::jsonb NOT NULL;

@@ -1,78 +1,24 @@
-import { desc, and, eq, isNull } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
+import { headers } from 'next/headers';
 import { db } from './drizzle';
-import { activityLogs, teamMembers, teams, users } from './schema';
-import { cookies } from 'next/headers';
-import { verifyToken } from '@/lib/auth/session';
+import { activityLogs, workspaceMembers, user as userTable } from './schema';
+import { auth } from '@/lib/auth/auth';
 
 export async function getUser() {
-  const sessionCookie = (await cookies()).get('session');
-  if (!sessionCookie || !sessionCookie.value) {
-    return null;
-  }
-
-  const sessionData = await verifyToken(sessionCookie.value);
-  if (
-    !sessionData ||
-    !sessionData.user ||
-    typeof sessionData.user.id !== 'number'
-  ) {
-    return null;
-  }
-
-  if (new Date(sessionData.expires) < new Date()) {
-    return null;
-  }
-
-  const user = await db
-    .select()
-    .from(users)
-    .where(and(eq(users.id, sessionData.user.id), isNull(users.deletedAt)))
-    .limit(1);
-
-  if (user.length === 0) {
-    return null;
-  }
-
-  return user[0];
+  const session = await auth.api.getSession({ headers: await headers() });
+  return session?.user ?? null;
 }
 
-export async function getTeamByStripeCustomerId(customerId: string) {
-  const result = await db
-    .select()
-    .from(teams)
-    .where(eq(teams.stripeCustomerId, customerId))
-    .limit(1);
-
-  return result.length > 0 ? result[0] : null;
-}
-
-export async function updateTeamSubscription(
-  teamId: number,
-  subscriptionData: {
-    stripeSubscriptionId: string | null;
-    stripeProductId: string | null;
-    planName: string | null;
-    subscriptionStatus: string;
-  }
-) {
-  await db
-    .update(teams)
-    .set({
-      ...subscriptionData,
-      updatedAt: new Date()
-    })
-    .where(eq(teams.id, teamId));
-}
-
-export async function getUserWithTeam(userId: number) {
+export async function getUserWithWorkspace(userId: string) {
   const result = await db
     .select({
-      user: users,
-      teamId: teamMembers.teamId
+      user: userTable,
+      workspaceId: workspaceMembers.workspaceId,
+      role: workspaceMembers.role,
     })
-    .from(users)
-    .leftJoin(teamMembers, eq(users.id, teamMembers.userId))
-    .where(eq(users.id, userId))
+    .from(userTable)
+    .leftJoin(workspaceMembers, eq(userTable.id, workspaceMembers.userId))
+    .where(eq(userTable.id, userId))
     .limit(1);
 
   return result[0];
@@ -90,41 +36,47 @@ export async function getActivityLogs() {
       action: activityLogs.action,
       timestamp: activityLogs.timestamp,
       ipAddress: activityLogs.ipAddress,
-      userName: users.name
+      userName: userTable.name,
     })
     .from(activityLogs)
-    .leftJoin(users, eq(activityLogs.userId, users.id))
+    .leftJoin(userTable, eq(activityLogs.userId, userTable.id))
     .where(eq(activityLogs.userId, user.id))
     .orderBy(desc(activityLogs.timestamp))
     .limit(10);
 }
 
-export async function getTeamForUser() {
+export async function getWorkspaceForUser() {
   const user = await getUser();
   if (!user) {
     return null;
   }
 
-  const result = await db.query.teamMembers.findFirst({
-    where: eq(teamMembers.userId, user.id),
+  const result = await db.query.workspaceMembers.findFirst({
+    where: eq(workspaceMembers.userId, user.id),
     with: {
-      team: {
+      workspace: {
         with: {
-          teamMembers: {
+          members: {
             with: {
               user: {
                 columns: {
                   id: true,
                   name: true,
-                  email: true
-                }
-              }
-            }
-          }
-        }
-      }
-    }
+                  email: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
   });
 
-  return result?.team || null;
+  return result?.workspace || null;
+}
+
+export async function getMembership(userId: string) {
+  return db.query.workspaceMembers.findFirst({
+    where: eq(workspaceMembers.userId, userId),
+  });
 }

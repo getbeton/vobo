@@ -1,0 +1,3 @@
+:root{
+--radius:.5rem;--radius-sm:calc(var(--radius) - 4px);--radius-md:calc(var(--radius) - 2px);--radius-lg:var(--radius);--radius-xl:calc(var(--radius) + 4px);--radius-full:9999px;
+}
