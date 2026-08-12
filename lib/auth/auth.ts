@@ -38,6 +38,13 @@ export const auth = betterAuth({
   databaseHooks: {
     user: {
       create: {
+        // One canonical form for every address: trimmed + lowercased. Case is
+        // the only normalisation applied — Gmail's dots and +tags are Google's
+        // own convention, and collapsing them would merge addresses that other
+        // providers treat as distinct people. See VOBO-168.
+        before: async (creating) => ({
+          data: { ...creating, email: creating.email.trim().toLowerCase() },
+        }),
         // Every path that can create a user runs through here — email,
         // Google, and anything added later — including a social callback that
         // redirects somewhere other than /welcome. Invitation-aware: an
@@ -47,6 +54,18 @@ export const auth = betterAuth({
         after: async (created) => {
           const { assignWorkspaceOnSignup } = await import('./bootstrap');
           await assignWorkspaceOnSignup(created.id, created.email);
+        },
+      },
+    },
+    account: {
+      create: {
+        // Fires when a Google identity attaches to a user — new or existing.
+        // Existing is the interesting case: see lib/auth/linking.ts for why an
+        // unproven local password does not survive it.
+        after: async (created) => {
+          if (created.providerId !== 'google') return;
+          const { reconcileOnGoogleLink } = await import('./linking');
+          await reconcileOnGoogleLink(created.userId);
         },
       },
     },

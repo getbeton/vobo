@@ -55,7 +55,7 @@ function authErrorMessage(error: unknown, fallback: string): string {
 }
 
 const signInSchema = z.object({
-  email: z.string().email().min(3).max(255),
+  email: z.string().email().min(3).max(255).transform(normalizeEmail),
   password: z.string().min(8).max(100),
 });
 
@@ -92,7 +92,7 @@ export const signIn = validatedAction(signInSchema, async (data) => {
 });
 
 const signUpSchema = z.object({
-  email: z.string().email(),
+  email: z.string().email().transform(normalizeEmail),
   password: z.string().min(8),
   inviteId: z.string().optional(),
 });

@@ -123,3 +123,33 @@ adjudication UI in the MVP and `blindN` defaults to 0.
 - `get_review` returns versions and events but not anchor states; consumers read anchors through
   `get_corrections`.
 - Production environment not created — see `DEPLOY.md` for why and how.
+
+## Identity: Google meeting an earlier email/password account (VOBO-168)
+
+One human, one user row. Google sign-in shipped after email/password, so the
+two can meet — deliberately, in three places:
+
+- **Normalisation.** Every address is trimmed and lowercased, at the sign-in
+  and sign-up boundary and again in the user-create hook. Gmail's dots and
+  `+tags` are **not** collapsed: that is one provider's convention, and other
+  providers treat those as different people.
+- **Linking.** `accountLinking` trusts Google, so signing in with Google as an
+  address that already has a password attaches to the existing user — same
+  workspace, same role, no second identity.
+- **The unverified case.** Anyone can register an email/password account for an
+  address they do not own; nothing proves ownership at signup. If the real owner
+  then signs in with Google and we link the two, the squatter's password opens
+  the owner's account. So when Google links into an account whose email was
+  never verified, the unproven password credential is **revoked** and the
+  address is marked verified — Google proved it, the password holder never did.
+  The owner keeps the account and can set a new password. A verified password is
+  left alone and both credentials keep working.
+
+Pairs that already diverged before this shipped are merged with
+`scripts/merge-users.mjs --keep <email|id> --merge <email|id>`, which is a
+**dry-run by default** and re-points every reference — memberships, decisions,
+annotations, criteria verdicts, repins, sticky reviewers, activity — before
+retiring the losing row. Attribution is the reason it is a merge and not a
+delete: a decision without an author stops answering "who accepted this", which
+is the entire promise of the Timeline. Signed events are never rewritten; only
+foreign keys move.
