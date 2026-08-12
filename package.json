@@ -45,6 +45,7 @@
   "name": "vobo",
   "version": "0.0.1",
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.4",
     "tsx": "^4.23.12",
     "vitest": "^3.2.7"
   }

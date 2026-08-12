@@ -1,0 +1,401 @@
+import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
+import { ensureMigrated, truncateAll, createFixtures, db, Fixtures } from './harness';
+import { createReview, submitVersion, ApiProblem } from '@/lib/core/requests';
+import { claim, release, rankedQueue, expireLeases, applySlaTimeouts } from '@/lib/core/queue';
+import { addComment, resolveComment, setCriterionVerdict } from '@/lib/core/annotations';
+import {
+  approveGate,
+  ship,
+  outgoingCorrections,
+  confirmResolution,
+  markPersisting,
+  retire,
+} from '@/lib/core/verdict';
+import { getVerifiedChain } from '@/lib/core/eventlog';
+
+const V1 = `Subject: quick question about your review stack
+
+Hi Dana, saw your team ships weekly.
+
+We sincerely apologize for the interruption, but our 60-day goodwill window makes this the best tool you'll ever use.
+
+Worth a look?`;
+
+const V2_FIXES_ONE = V1.replace(
+  "We sincerely apologize for the interruption, but our 60-day goodwill window makes this the best tool you'll ever use.",
+  'We cut the interruption short: our 60-day goodwill window makes this the rare tool you evaluate in one afternoon.'
+);
+
+let fx: Fixtures;
+
+beforeAll(async () => {
+  await ensureMigrated();
+});
+
+beforeEach(async () => {
+  await truncateAll();
+  fx = await createFixtures({ roundBudget: 3, slaMinutes: null, leaseMinutes: 60 });
+});
+
+function baseCreate(overrides: Record<string, unknown> = {}) {
+  return createReview(db, {
+    projectId: fx.projectId,
+    queueSlug: 'q',
+    customerRequestId: 'pico/c1/acme/dana/seq1',
+    title: 'Dana — seq 1',
+    contentMd: V1,
+    prompt: 'Write per voice rules',
+    source: 'Dossier: Acme ships weekly',
+    ...overrides,
+  } as any);
+}
+
+describe('API contract: create review / submit version', () => {
+  it('creates request + v1 with events; repeat call is a no-op upsert', async () => {
+    const first = await baseCreate();
+    expect(first.created).toBe(true);
+    const again = await baseCreate();
+    expect(again.created).toBe(false);
+    expect(again.request.id).toBe(first.request.id);
+
+    const { rows, verification } = await getVerifiedChain(db, first.request.id);
+    expect(verification.ok).toBe(true);
+    expect(rows.map((r) => r.type)).toEqual(['request.created', 'version.submitted']);
+  });
+
+  it('submit version on unknown id is 404 — never implicit create', async () => {
+    await expect(
+      submitVersion(db, {
+        projectId: fx.projectId,
+        customerRequestId: 'nope',
+        contentMd: 'x',
+      })
+    ).rejects.toMatchObject({ status: 404, code: 'request_not_found' });
+  });
+
+  it('submit version requires rejected status', async () => {
+    const { request } = await baseCreate();
+    await expect(
+      submitVersion(db, {
+        projectId: fx.projectId,
+        customerRequestId: request.customerRequestId,
+        contentMd: V2_FIXES_ONE,
+      })
+    ).rejects.toMatchObject({ status: 409, code: 'not_awaiting_version' });
+  });
+});
+
+async function reviewAndReject(requestId: string) {
+  await claim(db, requestId, fx.userId);
+  // Anchor a correction on the apology/superlative sentence.
+  const start = V1.indexOf('We sincerely apologize');
+  const end = V1.indexOf('ever use.') + 'ever use.'.length;
+  const ann = await addComment(db, {
+    requestId,
+    userId: fx.userId,
+    body: 'Apology boilerplate + superlative — rewrite per voice rules.',
+    expected: 'No apology; concrete value prop, no superlatives.',
+    startPos: start,
+    endPos: end,
+  });
+  for (const cid of fx.criterionIds) {
+    await setCriterionVerdict(db, {
+      requestId,
+      criterionId: cid,
+      userId: fx.userId,
+      verdict: 'fail',
+    });
+  }
+  const shipped = await ship(db, {
+    requestId,
+    userId: fx.userId,
+    kind: 'reject_corrections',
+  });
+  expect(shipped.status).toBe('rejected');
+  return ann;
+}
+
+describe('full regeneration loop with gates', () => {
+  it('reject-with-corrections → v2 → classification → gates → approve seals hash', async () => {
+    const { request } = await baseCreate();
+
+    // Criteria gate blocks verdicts before scoring.
+    await claim(db, request.id, fx.userId);
+    await expect(
+      ship(db, { requestId: request.id, userId: fx.userId, kind: 'approve' })
+    ).rejects.toMatchObject({ code: 'criteria_unscored' });
+    await release(db, request.id, fx.userId);
+
+    const ann = await reviewAndReject(request.id);
+
+    // Outgoing payload carried the anchored correction.
+    const { rows } = await getVerifiedChain(db, request.id);
+    const rejected = rows.find((r) => r.type === 'decision.rejected')!;
+    expect((rejected.payload as any).corrections).toHaveLength(1);
+    expect((rejected.payload as any).corrections[0].expected).toContain('No apology');
+
+    // v2 fixes the anchored sentence.
+    const v2 = await submitVersion(db, {
+      projectId: fx.projectId,
+      customerRequestId: request.customerRequestId,
+      contentMd: V2_FIXES_ONE,
+      responses: [{ annotationId: ann.id, note: 'rewrote the paragraph' }],
+    });
+    expect(v2.created).toBe(true);
+    expect(v2.classifications).toMatchObject({ resolved: 1, persisting: 0, orphaned: 0 });
+    expect(v2.request.status).toBe('open');
+    expect(v2.request.round).toBe(2);
+    expect(v2.request.stickyReviewerId).toBe(fx.userId);
+
+    // Idempotent resubmission is a no-op.
+    const dupe = await submitVersion(db, {
+      projectId: fx.projectId,
+      customerRequestId: request.customerRequestId,
+      contentMd: V2_FIXES_ONE,
+    });
+    expect(dupe.created).toBe(false);
+
+    // Round 2 review: gate demands criteria again, then interstitial for the
+    // unconfirmed resolution.
+    await claim(db, request.id, fx.userId);
+    for (const cid of fx.criterionIds) {
+      await setCriterionVerdict(db, {
+        requestId: request.id,
+        criterionId: cid,
+        userId: fx.userId,
+        verdict: 'pass',
+      });
+    }
+    const gate = await approveGate(db, request.id, fx.userId);
+    expect(gate.blocked).toBe(false);
+    expect(gate.interstitials.join(' ')).toContain('auto-confirmed');
+
+    await expect(
+      ship(db, { requestId: request.id, userId: fx.userId, kind: 'approve' })
+    ).rejects.toMatchObject({ code: 'interstitial_unacknowledged' });
+
+    const approved = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'approve',
+      acknowledgeInterstitials: true,
+    });
+    expect(approved.status).toBe('accepted');
+    expect(approved.sealedHash).toMatch(/^[0-9a-f]{64}$/);
+
+    // Terminal: further versions are rejected.
+    await expect(
+      submitVersion(db, {
+        projectId: fx.projectId,
+        customerRequestId: request.customerRequestId,
+        contentMd: 'anything',
+      })
+    ).rejects.toMatchObject({ code: 'already_accepted' });
+
+    // The whole chain verifies.
+    const final = await getVerifiedChain(db, request.id);
+    expect(final.verification.ok).toBe(true);
+    const types = final.rows.map((r) => r.type);
+    expect(types).toContain('decision.accepted');
+  });
+
+  it('persisting anchors block approve until judged; persist re-asserts into next event', async () => {
+    const { request } = await baseCreate();
+    await reviewAndReject(request.id);
+
+    // v2 that IGNORES the correction (same offending sentence).
+    const v2 = await submitVersion(db, {
+      projectId: fx.projectId,
+      customerRequestId: request.customerRequestId,
+      contentMd: V1 + '\n\nP.S. New unrelated line.',
+    });
+    expect(v2.classifications).toMatchObject({ persisting: 1 });
+
+    const { rows } = await getVerifiedChain(db, request.id);
+    expect(rows.map((r) => r.type)).toContain('correction.persisting');
+
+    await claim(db, request.id, fx.userId);
+    for (const cid of fx.criterionIds) {
+      await setCriterionVerdict(db, {
+        requestId: request.id,
+        criterionId: cid,
+        userId: fx.userId,
+        verdict: 'pass',
+      });
+    }
+    const gate = await approveGate(db, request.id, fx.userId);
+    expect(gate.blocked).toBe(true);
+    expect(gate.reasons.join(' ')).toContain('the model ignored them');
+
+    // Re-assert and reject again → outgoing carries it.
+    const versionRow = v2.version;
+    const anns = await outgoingCorrections(db, request.id);
+    expect(anns.length).toBe(1);
+    await markPersisting(db, request.id, anns[0].annotation_id, versionRow.id);
+    const shipped = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'reject_corrections',
+    });
+    expect(shipped.status).toBe('rejected');
+  });
+
+  it('orphaned anchors block approve until retired; round budget forces escalate', async () => {
+    const { request } = await baseCreate();
+    await reviewAndReject(request.id); // round 1 → rejected
+
+    // v2 deletes the whole paragraph → orphan.
+    const v2content = V1.replace(
+      "\n\nWe sincerely apologize for the interruption, but our 60-day goodwill window makes this the best tool you'll ever use.",
+      ''
+    );
+    const v2 = await submitVersion(db, {
+      projectId: fx.projectId,
+      customerRequestId: request.customerRequestId,
+      contentMd: v2content,
+    });
+    expect(v2.classifications).toMatchObject({ orphaned: 1 });
+
+    await claim(db, request.id, fx.userId);
+    for (const cid of fx.criterionIds) {
+      await setCriterionVerdict(db, {
+        requestId: request.id,
+        criterionId: cid,
+        userId: fx.userId,
+        verdict: 'pass',
+      });
+    }
+    let gate = await approveGate(db, request.id, fx.userId);
+    expect(gate.reasons.join(' ')).toContain('re-pin or retire');
+
+    const out = await outgoingCorrections(db, request.id);
+    // Orphans are not in the outgoing set — retire the annotation with reason.
+    const chain = await getVerifiedChain(db, request.id);
+    const annEvent = chain.rows.find((r) => r.type === 'annotation.created')!;
+    await retire(db, {
+      requestId: request.id,
+      annotationId: (annEvent.payload as any).annotation_id,
+      userId: fx.userId,
+      reason: 'Paragraph removed entirely — moot',
+    });
+    gate = await approveGate(db, request.id, fx.userId);
+    expect(gate.blocked).toBe(false);
+
+    // Round budget: round 2 with budget 3 — reject twice more to hit it.
+    await addComment(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      body: 'still weak',
+      startPos: 0,
+      endPos: 8,
+    });
+    await ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_corrections' });
+    const v3 = await submitVersion(db, {
+      projectId: fx.projectId,
+      customerRequestId: request.customerRequestId,
+      contentMd: v2content + '\n\nAnother pass.',
+    });
+    expect(v3.request.round).toBe(3);
+    await claim(db, request.id, fx.userId);
+    for (const cid of fx.criterionIds) {
+      await setCriterionVerdict(db, {
+        requestId: request.id,
+        criterionId: cid,
+        userId: fx.userId,
+        verdict: 'fail',
+      });
+    }
+    await expect(
+      ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_rerun' })
+    ).rejects.toMatchObject({ code: 'round_budget_exceeded' });
+
+    await expect(
+      ship(db, { requestId: request.id, userId: fx.userId, kind: 'escalate', reason: 'no' })
+    ).rejects.toMatchObject({ code: 'escalation_reason_required' });
+
+    const esc = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'escalate',
+      reason: 'Model keeps thrashing after 3 rounds',
+    });
+    expect(esc.status).toBe('escalated');
+  });
+});
+
+describe('queue: ranking, claim race, lease expiry, SLA', () => {
+  it('two concurrent claims — exactly one wins', async () => {
+    const { request } = await baseCreate();
+    const results = await Promise.allSettled([
+      claim(db, request.id, fx.userId),
+      claim(db, request.id, 'u_other'),
+    ]);
+    const wins = results.filter((r) => r.status === 'fulfilled').length;
+    // The loser sees claim_race (lease exists) or not_claimable (status
+    // already flipped) depending on commit timing — both are correct.
+    const races = results.filter(
+      (r) =>
+        r.status === 'rejected' &&
+        ['claim_race', 'not_claimable'].includes((r.reason as ApiProblem).code)
+    ).length;
+    expect(wins).toBe(1);
+    expect(races).toBe(1);
+  });
+
+  it('ranking: sticky regeneration outranks earlier SLA; rationale serialized', async () => {
+    const a = await baseCreate({ customerRequestId: 'r/a', title: 'A' });
+    const b = await baseCreate({ customerRequestId: 'r/b', title: 'B' });
+    // Make B a sticky regeneration for our user.
+    await reviewAndReject(b.request.id);
+    await submitVersion(db, {
+      projectId: fx.projectId,
+      customerRequestId: 'r/b',
+      contentMd: V2_FIXES_ONE,
+    });
+    const rows = await rankedQueue(db, fx.queueId, fx.userId);
+    expect(rows[0].request.id).toBe(b.request.id);
+    expect(rows[0].sticky).toBe(true);
+    expect(rows[0].rankRationale).toContain('sticky');
+    expect(rows.find((r) => r.request.id === a.request.id)).toBeTruthy();
+  });
+
+  it('expired lease returns the request to open', async () => {
+    const { request } = await baseCreate();
+    await claim(db, request.id, fx.userId);
+    // Force-expire.
+    const { leases } = await import('@/lib/db/schema');
+    const { eq } = await import('drizzle-orm');
+    await db
+      .update(leases)
+      .set({ expiresAt: new Date(Date.now() - 1000) })
+      .where(eq(leases.requestId, request.id));
+    const n = await expireLeases(db);
+    expect(n).toBe(1);
+    const { reviewRequests } = await import('@/lib/db/schema');
+    const after = await db.query.reviewRequests.findFirst({
+      where: eq(reviewRequests.id, request.id),
+    });
+    expect(after!.status).toBe('open');
+  });
+
+  it('SLA timeout applies fail-closed → escalated with flagged event', async () => {
+    await truncateAll();
+    fx = await createFixtures({ slaMinutes: 1, slaFailMode: 'fail_closed' });
+    const { request } = await baseCreate();
+    const { reviewRequests } = await import('@/lib/db/schema');
+    const { eq } = await import('drizzle-orm');
+    await db
+      .update(reviewRequests)
+      .set({ slaDueAt: new Date(Date.now() - 1000) })
+      .where(eq(reviewRequests.id, request.id));
+    const n = await applySlaTimeouts(db);
+    expect(n).toBe(1);
+    const after = await db.query.reviewRequests.findFirst({
+      where: eq(reviewRequests.id, request.id),
+    });
+    expect(after!.status).toBe('escalated');
+    const { rows } = await getVerifiedChain(db, request.id);
+    const t = rows.find((r) => r.type === 'sla.timeout')!;
+    expect((t.payload as any).flagged_unreviewed).toBe(true);
+  });
+});
