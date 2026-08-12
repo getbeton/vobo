@@ -1,0 +1,96 @@
+import { redirect } from 'next/navigation';
+import { and, eq, isNull } from 'drizzle-orm';
+import { db } from '@/lib/db/drizzle';
+import { getUser } from '@/lib/db/queries';
+import {
+  workspaceMembers,
+  projects,
+  queues,
+  anchorStates,
+  annotations,
+  artifactVersions,
+} from '@/lib/db/schema';
+import { rankedQueue } from '@/lib/core/queue';
+import { QueueScreen, QueueRowData } from '@/components/queue/QueueScreen';
+
+export const dynamic = 'force-dynamic';
+
+export default async function QueuePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ queue?: string; env?: string }>;
+}) {
+  const params = await searchParams;
+  const user = await getUser();
+  if (!user) redirect('/sign-in');
+  const membership = await db.query.workspaceMembers.findFirst({
+    where: eq(workspaceMembers.userId, user.id),
+  });
+  if (!membership) redirect('/sign-in');
+  const project = await db.query.projects.findFirst({
+    where: eq(projects.workspaceId, membership.workspaceId),
+  });
+  if (!project) return <QueueScreen rows={[]} nextUp={null} noQueue />;
+
+  const environment = (params.env === 'test' ? 'test' : 'production') as 'test' | 'production';
+  const allQueues = await db
+    .select()
+    .from(queues)
+    .where(and(eq(queues.projectId, project.id), eq(queues.environment, environment)));
+  const queue = params.queue
+    ? allQueues.find((q) => q.slug === params.queue)
+    : allQueues[0];
+  if (!queue) return <QueueScreen rows={[]} nextUp={null} noQueue />;
+
+  const ranked = await rankedQueue(db, queue.id, user.id);
+
+  const rows: QueueRowData[] = [];
+  for (const r of ranked) {
+    // Persisting count on the current version (loud badge per the prototype).
+    let persisting = 0;
+    if (r.request.round > 1) {
+      const currentVersion = await db.query.artifactVersions.findFirst({
+        where: and(
+          eq(artifactVersions.requestId, r.request.id),
+          eq(artifactVersions.versionNumber, r.request.round)
+        ),
+      });
+      if (currentVersion) {
+        const states = await db
+          .select({ id: anchorStates.id })
+          .from(anchorStates)
+          .innerJoin(annotations, eq(annotations.id, anchorStates.annotationId))
+          .where(
+            and(
+              eq(anchorStates.versionId, currentVersion.id),
+              eq(anchorStates.state, 'persisting'),
+              isNull(annotations.retiredAt)
+            )
+          );
+        persisting = states.length;
+      }
+    }
+    rows.push({
+      id: r.request.id,
+      title: r.request.title,
+      round: r.request.round,
+      status: r.request.status,
+      slaDueAt: r.request.slaDueAt?.toISOString() ?? null,
+      priority: r.request.priority,
+      sticky: r.sticky,
+      persisting,
+      rankRationale: r.rankRationale,
+      lease: r.lease
+        ? {
+            mine: r.lease.userId === user.id,
+            expiresAt: r.lease.expiresAt.toISOString(),
+          }
+        : null,
+    });
+  }
+
+  const nextUp =
+    rows.find((r) => r.status === 'open' || (r.lease?.mine ?? false)) ?? null;
+
+  return <QueueScreen rows={rows} nextUp={nextUp} noQueue={false} />;
+}
