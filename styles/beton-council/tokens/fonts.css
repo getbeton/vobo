@@ -1,0 +1,3 @@
+/* Prototype loads Inter from Google Fonts. In the app we load Inter via
+   next/font (see app/layout.tsx) — do NOT import this file in the app. */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
