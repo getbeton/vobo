@@ -88,6 +88,10 @@ export function anchor(text: string, selector: Selector): AnchorMatch | null {
   const candidates: AnchorMatch[] = [];
 
   // 2. Exact occurrences.
+  // Known edge (accepted 08-12): if the true target was edited AND an
+  // identical quote exists elsewhere, the surviving exact match wins before
+  // fuzzy search runs. Context scoring breaks most ties; revisit if dogfood
+  // shows mis-anchors (fix = always run fuzzy and rank jointly).
   let idx = text.indexOf(quote);
   while (idx !== -1) {
     candidates.push(scoreCandidate(idx, idx + quote.length, 0));
@@ -136,7 +140,13 @@ export function splitParagraphs(
 }
 
 export function words(s: string): string[] {
-  return s.toLowerCase().match(/[a-z0-9$€%#.'’-]+/g) || [];
+  // Deviation from the prototype formula (deliberate, 08-12): tokens are
+  // stripped of edge punctuation so "method." === "method" — the prototype
+  // kept trailing periods, which depressed similarity near the thresholds.
+  const raw = s.toLowerCase().match(/[a-z0-9$€%#.'’-]+/g) || [];
+  return raw
+    .map((w) => w.replace(/^[.'’-]+|[.'’-]+$/g, ''))
+    .filter((w) => w.length > 0);
 }
 
 export function jaccard(a: string, b: string): number {

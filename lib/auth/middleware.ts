@@ -1,6 +1,8 @@
 import { z } from 'zod';
-import { WorkspaceDataWithMembers, User } from '@/lib/db/schema';
+import { WorkspaceDataWithMembers } from '@/lib/db/schema';
 import { getWorkspaceForUser, getUser } from '@/lib/db/queries';
+
+type SessionUser = NonNullable<Awaited<ReturnType<typeof getUser>>>;
 import { redirect } from 'next/navigation';
 
 export type ActionState = {
@@ -31,7 +33,7 @@ export function validatedAction<S extends z.ZodType<any, any>, T>(
 type ValidatedActionWithUserFunction<S extends z.ZodType<any, any>, T> = (
   data: z.infer<S>,
   formData: FormData,
-  user: User
+  user: SessionUser
 ) => Promise<T>;
 
 export function validatedActionWithUser<S extends z.ZodType<any, any>, T>(

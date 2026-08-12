@@ -86,14 +86,63 @@ export const deliveryStatusEnum = pgEnum('delivery_status', [
 // Identity & tenancy (Workspace → Project → Queue)
 // ---------------------------------------------------------------------------
 
-export const users = pgTable('users', {
-  id: serial('id').primaryKey(),
-  name: varchar('name', { length: 100 }),
-  email: varchar('email', { length: 255 }).notNull().unique(),
-  passwordHash: text('password_hash').notNull(),
-  createdAt: timestamp('created_at').notNull().defaultNow(),
-  updatedAt: timestamp('updated_at').notNull().defaultNow(),
-  deletedAt: timestamp('deleted_at'),
+// BetterAuth-managed tables (drizzle adapter). Column shapes follow the
+// better-auth schema contract — do not add app columns here; app-level user
+// data belongs in domain tables keyed by user.id.
+export const user = pgTable('user', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  email: text('email').notNull().unique(),
+  emailVerified: boolean('email_verified')
+    .$defaultFn(() => false)
+    .notNull(),
+  image: text('image'),
+  createdAt: timestamp('created_at')
+    .$defaultFn(() => new Date())
+    .notNull(),
+  updatedAt: timestamp('updated_at')
+    .$defaultFn(() => new Date())
+    .notNull(),
+});
+
+export const session = pgTable('session', {
+  id: text('id').primaryKey(),
+  expiresAt: timestamp('expires_at').notNull(),
+  token: text('token').notNull().unique(),
+  createdAt: timestamp('created_at').notNull(),
+  updatedAt: timestamp('updated_at').notNull(),
+  ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+  userId: text('user_id')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+});
+
+export const account = pgTable('account', {
+  id: text('id').primaryKey(),
+  accountId: text('account_id').notNull(),
+  providerId: text('provider_id').notNull(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  accessToken: text('access_token'),
+  refreshToken: text('refresh_token'),
+  idToken: text('id_token'),
+  accessTokenExpiresAt: timestamp('access_token_expires_at'),
+  refreshTokenExpiresAt: timestamp('refresh_token_expires_at'),
+  scope: text('scope'),
+  password: text('password'),
+  createdAt: timestamp('created_at').notNull(),
+  updatedAt: timestamp('updated_at').notNull(),
+});
+
+export const verification = pgTable('verification', {
+  id: text('id').primaryKey(),
+  identifier: text('identifier').notNull(),
+  value: text('value').notNull(),
+  expiresAt: timestamp('expires_at').notNull(),
+  createdAt: timestamp('created_at').$defaultFn(() => new Date()),
+  updatedAt: timestamp('updated_at').$defaultFn(() => new Date()),
 });
 
 export const workspaces = pgTable('workspaces', {
@@ -111,9 +160,9 @@ export const workspaceMembers = pgTable(
   'workspace_members',
   {
     id: serial('id').primaryKey(),
-    userId: integer('user_id')
+    userId: text('user_id')
       .notNull()
-      .references(() => users.id),
+      .references(() => user.id),
     workspaceId: integer('workspace_id')
       .notNull()
       .references(() => workspaces.id),
@@ -130,9 +179,9 @@ export const invitations = pgTable('invitations', {
     .references(() => workspaces.id),
   email: varchar('email', { length: 255 }).notNull(),
   role: workspaceRoleEnum('role').notNull().default('reviewer'),
-  invitedBy: integer('invited_by')
+  invitedBy: text('invited_by')
     .notNull()
-    .references(() => users.id),
+    .references(() => user.id),
   invitedAt: timestamp('invited_at').notNull().defaultNow(),
   status: varchar('status', { length: 20 }).notNull().default('pending'),
 });
@@ -142,7 +191,7 @@ export const activityLogs = pgTable('activity_logs', {
   workspaceId: integer('workspace_id')
     .notNull()
     .references(() => workspaces.id),
-  userId: integer('user_id').references(() => users.id),
+  userId: text('user_id').references(() => user.id),
   action: text('action').notNull(),
   timestamp: timestamp('timestamp').notNull().defaultNow(),
   ipAddress: varchar('ip_address', { length: 45 }),
@@ -213,7 +262,7 @@ export const policyVersions = pgTable(
       .references(() => queues.id),
     version: integer('version').notNull(),
     config: jsonb('config').notNull(),
-    createdBy: integer('created_by').references(() => users.id),
+    createdBy: text('created_by').references(() => user.id),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (t) => [uniqueIndex('policy_versions_queue_version_uq').on(t.queueId, t.version)]
@@ -255,7 +304,7 @@ export const reviewRequests = pgTable(
     priority: integer('priority').notNull().default(3), // 1 = highest
     status: requestStatusEnum('status').notNull().default('open'),
     round: integer('round').notNull().default(1),
-    stickyReviewerId: integer('sticky_reviewer_id').references(() => users.id),
+    stickyReviewerId: text('sticky_reviewer_id').references(() => user.id),
     pipelineRunId: varchar('pipeline_run_id', { length: 255 }),
     traceId: varchar('trace_id', { length: 255 }),
     // Context bundle (what the reviewer judges against)
@@ -360,9 +409,9 @@ export const annotations = pgTable(
     bornVersionId: uuid('born_version_id')
       .notNull()
       .references(() => artifactVersions.id),
-    authorUserId: integer('author_user_id')
+    authorUserId: text('author_user_id')
       .notNull()
-      .references(() => users.id),
+      .references(() => user.id),
     body: text('body').notNull(),
     expected: text('expected'), // the testable expected outcome (PRD s3.1.2)
     // W3C-style dual anchor: TextQuote (quote+prefix+suffix) + TextPosition
@@ -373,7 +422,7 @@ export const annotations = pgTable(
     endPos: integer('end_pos').notNull(),
     parentId: uuid('parent_id'), // thread reply → parent annotation
     resolvedAt: timestamp('resolved_at'), // resolve unblocks approve; does NOT ship
-    resolvedBy: integer('resolved_by').references(() => users.id),
+    resolvedBy: text('resolved_by').references(() => user.id),
     retiredAt: timestamp('retired_at'),
     retireReason: text('retire_reason'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
@@ -423,9 +472,9 @@ export const repinHistory = pgTable('repin_history', {
   newQuote: text('new_quote').notNull(),
   newStartPos: integer('new_start_pos').notNull(),
   newEndPos: integer('new_end_pos').notNull(),
-  userId: integer('user_id')
+  userId: text('user_id')
     .notNull()
-    .references(() => users.id),
+    .references(() => user.id),
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
 
@@ -447,9 +496,9 @@ export const criteriaVerdicts = pgTable(
       .notNull()
       .references(() => criteria.id),
     verdict: criterionVerdictEnum('verdict').notNull(),
-    userId: integer('user_id')
+    userId: text('user_id')
       .notNull()
-      .references(() => users.id),
+      .references(() => user.id),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
@@ -473,9 +522,9 @@ export const decisions = pgTable('decisions', {
   round: integer('round').notNull(),
   kind: decisionKindEnum('kind').notNull(),
   reason: text('reason'), // required (≥4 chars) for escalate; enforced in service
-  decidedBy: integer('decided_by')
+  decidedBy: text('decided_by')
     .notNull()
-    .references(() => users.id),
+    .references(() => user.id),
   sealedHash: varchar('sealed_hash', { length: 64 }), // set on approve/approve_edited
   createdAt: timestamp('created_at').notNull().defaultNow(),
 });
@@ -545,9 +594,9 @@ export const leases = pgTable(
     requestId: uuid('request_id')
       .notNull()
       .references(() => reviewRequests.id),
-    userId: integer('user_id')
+    userId: text('user_id')
       .notNull()
-      .references(() => users.id),
+      .references(() => user.id),
     expiresAt: timestamp('expires_at').notNull(),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
@@ -564,12 +613,12 @@ export const workspacesRelations = relations(workspaces, ({ many }) => ({
   invitations: many(invitations),
 }));
 
-export const usersRelations = relations(users, ({ many }) => ({
+export const userRelations = relations(user, ({ many }) => ({
   memberships: many(workspaceMembers),
 }));
 
 export const workspaceMembersRelations = relations(workspaceMembers, ({ one }) => ({
-  user: one(users, { fields: [workspaceMembers.userId], references: [users.id] }),
+  user: one(user, { fields: [workspaceMembers.userId], references: [user.id] }),
   workspace: one(workspaces, {
     fields: [workspaceMembers.workspaceId],
     references: [workspaces.id],
@@ -581,9 +630,9 @@ export const invitationsRelations = relations(invitations, ({ one }) => ({
     fields: [invitations.workspaceId],
     references: [workspaces.id],
   }),
-  invitedByUser: one(users, {
+  invitedByUser: one(user, {
     fields: [invitations.invitedBy],
-    references: [users.id],
+    references: [user.id],
   }),
 }));
 
@@ -630,7 +679,7 @@ export const annotationsRelations = relations(annotations, ({ one, many }) => ({
     fields: [annotations.requestId],
     references: [reviewRequests.id],
   }),
-  author: one(users, { fields: [annotations.authorUserId], references: [users.id] }),
+  author: one(user, { fields: [annotations.authorUserId], references: [user.id] }),
   states: many(anchorStates),
 }));
 
@@ -665,15 +714,16 @@ export const activityLogsRelations = relations(activityLogs, ({ one }) => ({
     fields: [activityLogs.workspaceId],
     references: [workspaces.id],
   }),
-  user: one(users, { fields: [activityLogs.userId], references: [users.id] }),
+  user: one(user, { fields: [activityLogs.userId], references: [user.id] }),
 }));
 
 // ---------------------------------------------------------------------------
 // Inferred types
 // ---------------------------------------------------------------------------
 
-export type User = typeof users.$inferSelect;
-export type NewUser = typeof users.$inferInsert;
+export type User = typeof user.$inferSelect;
+export type NewUser = typeof user.$inferInsert;
+export type Session = typeof session.$inferSelect;
 export type Workspace = typeof workspaces.$inferSelect;
 export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
 export type Invitation = typeof invitations.$inferSelect;

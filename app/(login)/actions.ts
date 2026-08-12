@@ -1,21 +1,20 @@
 'use server';
 
 import { z } from 'zod';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
+import { headers } from 'next/headers';
+import { APIError } from 'better-auth';
 import { db } from '@/lib/db/drizzle';
 import {
-  User,
-  users,
   workspaces,
   workspaceMembers,
   activityLogs,
-  type NewUser,
   ActivityType,
   invitations,
+  user as userTable,
 } from '@/lib/db/schema';
-import { comparePasswords, hashPassword, setSession } from '@/lib/auth/session';
+import { auth } from '@/lib/auth/auth';
 import { redirect } from 'next/navigation';
-import { cookies } from 'next/headers';
 import { getUser, getUserWithWorkspace } from '@/lib/db/queries';
 import {
   validatedAction,
@@ -24,7 +23,7 @@ import {
 
 async function logActivity(
   workspaceId: number | null | undefined,
-  userId: number,
+  userId: string,
   type: ActivityType,
   ipAddress?: string
 ) {
@@ -57,29 +56,31 @@ const signInSchema = z.object({
 export const signIn = validatedAction(signInSchema, async (data) => {
   const { email, password } = data;
 
-  const rows = await db
-    .select({ user: users, workspace: workspaces })
-    .from(users)
-    .leftJoin(workspaceMembers, eq(users.id, workspaceMembers.userId))
-    .leftJoin(workspaces, eq(workspaceMembers.workspaceId, workspaces.id))
-    .where(eq(users.email, email))
+  try {
+    await auth.api.signInEmail({
+      body: { email, password },
+      headers: await headers(),
+    });
+  } catch (error) {
+    if (error instanceof APIError) {
+      return {
+        error: 'Invalid email or password. Please try again.',
+        email,
+        password,
+      };
+    }
+    throw error;
+  }
+
+  const [row] = await db
+    .select({ userId: userTable.id, workspaceId: workspaceMembers.workspaceId })
+    .from(userTable)
+    .leftJoin(workspaceMembers, eq(userTable.id, workspaceMembers.userId))
+    .where(eq(userTable.email, email))
     .limit(1);
-
-  if (rows.length === 0) {
-    return { error: 'Invalid email or password. Please try again.', email, password };
+  if (row) {
+    await logActivity(row.workspaceId, row.userId, ActivityType.SIGN_IN);
   }
-
-  const { user: foundUser, workspace: foundWorkspace } = rows[0];
-
-  const isPasswordValid = await comparePasswords(password, foundUser.passwordHash);
-  if (!isPasswordValid) {
-    return { error: 'Invalid email or password. Please try again.', email, password };
-  }
-
-  await Promise.all([
-    setSession(foundUser),
-    logActivity(foundWorkspace?.id, foundUser.id, ActivityType.SIGN_IN),
-  ]);
 
   redirect('/dashboard');
 });
@@ -93,23 +94,18 @@ const signUpSchema = z.object({
 export const signUp = validatedAction(signUpSchema, async (data) => {
   const { email, password, inviteId } = data;
 
-  const existingUser = await db
-    .select()
-    .from(users)
-    .where(eq(users.email, email))
-    .limit(1);
-
-  if (existingUser.length > 0) {
-    return { error: 'Failed to create user. Please try again.', email, password };
-  }
-
-  const passwordHash = await hashPassword(password);
-
-  const newUser: NewUser = { email, passwordHash };
-  const [createdUser] = await db.insert(users).values(newUser).returning();
-
-  if (!createdUser) {
-    return { error: 'Failed to create user. Please try again.', email, password };
+  let createdUserId: string;
+  try {
+    const res = await auth.api.signUpEmail({
+      body: { email, password, name: email.split('@')[0] },
+      headers: await headers(),
+    });
+    createdUserId = res.user.id;
+  } catch (error) {
+    if (error instanceof APIError) {
+      return { error: 'Failed to create user. Please try again.', email, password };
+    }
+    throw error;
   }
 
   let workspaceId: number;
@@ -140,7 +136,7 @@ export const signUp = validatedAction(signUpSchema, async (data) => {
       .set({ status: 'accepted' })
       .where(eq(invitations.id, invitation.id));
 
-    await logActivity(workspaceId, createdUser.id, ActivityType.ACCEPT_INVITATION);
+    await logActivity(workspaceId, createdUserId, ActivityType.ACCEPT_INVITATION);
   } else {
     const name = `${email.split('@')[0]}'s workspace`;
     const [createdWorkspace] = await db
@@ -154,27 +150,28 @@ export const signUp = validatedAction(signUpSchema, async (data) => {
 
     workspaceId = createdWorkspace.id;
     userRole = 'admin';
-    await logActivity(workspaceId, createdUser.id, ActivityType.CREATE_WORKSPACE);
+    await logActivity(workspaceId, createdUserId, ActivityType.CREATE_WORKSPACE);
   }
 
   await Promise.all([
     db.insert(workspaceMembers).values({
-      userId: createdUser.id,
+      userId: createdUserId,
       workspaceId,
       role: userRole,
     }),
-    logActivity(workspaceId, createdUser.id, ActivityType.SIGN_UP),
-    setSession(createdUser),
+    logActivity(workspaceId, createdUserId, ActivityType.SIGN_UP),
   ]);
 
   redirect('/dashboard');
 });
 
 export async function signOut() {
-  const user = (await getUser()) as User;
-  const withWs = await getUserWithWorkspace(user.id);
-  await logActivity(withWs?.workspaceId, user.id, ActivityType.SIGN_OUT);
-  (await cookies()).delete('session');
+  const user = await getUser();
+  if (user) {
+    const withWs = await getUserWithWorkspace(user.id);
+    await logActivity(withWs?.workspaceId, user.id, ActivityType.SIGN_OUT);
+  }
+  await auth.api.signOut({ headers: await headers() });
 }
 
 const updatePasswordSchema = z.object({
@@ -187,16 +184,6 @@ export const updatePassword = validatedActionWithUser(
   updatePasswordSchema,
   async (data, _, user) => {
     const { currentPassword, newPassword, confirmPassword } = data;
-
-    const isPasswordValid = await comparePasswords(currentPassword, user.passwordHash);
-    if (!isPasswordValid) {
-      return {
-        currentPassword,
-        newPassword,
-        confirmPassword,
-        error: 'Current password is incorrect.',
-      };
-    }
 
     if (currentPassword === newPassword) {
       return {
@@ -216,13 +203,25 @@ export const updatePassword = validatedActionWithUser(
       };
     }
 
-    const newPasswordHash = await hashPassword(newPassword);
-    const withWs = await getUserWithWorkspace(user.id);
+    try {
+      await auth.api.changePassword({
+        body: { currentPassword, newPassword },
+        headers: await headers(),
+      });
+    } catch (error) {
+      if (error instanceof APIError) {
+        return {
+          currentPassword,
+          newPassword,
+          confirmPassword,
+          error: 'Current password is incorrect.',
+        };
+      }
+      throw error;
+    }
 
-    await Promise.all([
-      db.update(users).set({ passwordHash: newPasswordHash }).where(eq(users.id, user.id)),
-      logActivity(withWs?.workspaceId, user.id, ActivityType.UPDATE_PASSWORD),
-    ]);
+    const withWs = await getUserWithWorkspace(user.id);
+    await logActivity(withWs?.workspaceId, user.id, ActivityType.UPDATE_PASSWORD);
 
     return { success: 'Password updated successfully.' };
   }
@@ -237,22 +236,8 @@ export const deleteAccount = validatedActionWithUser(
   async (data, _, user) => {
     const { password } = data;
 
-    const isPasswordValid = await comparePasswords(password, user.passwordHash);
-    if (!isPasswordValid) {
-      return { password, error: 'Incorrect password. Account deletion failed.' };
-    }
-
     const withWs = await getUserWithWorkspace(user.id);
     await logActivity(withWs?.workspaceId, user.id, ActivityType.DELETE_ACCOUNT);
-
-    // Soft delete
-    await db
-      .update(users)
-      .set({
-        deletedAt: sql`CURRENT_TIMESTAMP`,
-        email: sql`CONCAT(email, '-', id, '-deleted')`, // Ensure email uniqueness
-      })
-      .where(eq(users.id, user.id));
 
     if (withWs?.workspaceId) {
       await db
@@ -265,7 +250,18 @@ export const deleteAccount = validatedActionWithUser(
         );
     }
 
-    (await cookies()).delete('session');
+    try {
+      await auth.api.deleteUser({
+        body: { password },
+        headers: await headers(),
+      });
+    } catch (error) {
+      if (error instanceof APIError) {
+        return { password, error: 'Incorrect password. Account deletion failed.' };
+      }
+      throw error;
+    }
+
     redirect('/sign-in');
   }
 );
@@ -279,12 +275,21 @@ export const updateAccount = validatedActionWithUser(
   updateAccountSchema,
   async (data, _, user) => {
     const { name, email } = data;
-    const withWs = await getUserWithWorkspace(user.id);
 
-    await Promise.all([
-      db.update(users).set({ name, email }).where(eq(users.id, user.id)),
-      logActivity(withWs?.workspaceId, user.id, ActivityType.UPDATE_ACCOUNT),
-    ]);
+    if (email !== user.email) {
+      return {
+        name,
+        error: 'Email change is not supported yet — contact an admin.',
+      };
+    }
+
+    await auth.api.updateUser({
+      body: { name },
+      headers: await headers(),
+    });
+
+    const withWs = await getUserWithWorkspace(user.id);
+    await logActivity(withWs?.workspaceId, user.id, ActivityType.UPDATE_ACCOUNT);
 
     return { name, success: 'Account updated successfully.' };
   }
@@ -336,10 +341,10 @@ export const inviteWorkspaceMember = validatedActionWithUser(
 
     const existingMember = await db
       .select()
-      .from(users)
-      .leftJoin(workspaceMembers, eq(users.id, workspaceMembers.userId))
+      .from(userTable)
+      .leftJoin(workspaceMembers, eq(userTable.id, workspaceMembers.userId))
       .where(
-        and(eq(users.email, email), eq(workspaceMembers.workspaceId, withWs.workspaceId))
+        and(eq(userTable.email, email), eq(workspaceMembers.workspaceId, withWs.workspaceId))
       )
       .limit(1);
 

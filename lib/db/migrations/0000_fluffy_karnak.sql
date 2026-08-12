@@ -8,10 +8,26 @@ CREATE TYPE "public"."delivery_status" AS ENUM('pending', 'delivered', 'failed',
 CREATE TYPE "public"."queue_environment" AS ENUM('test', 'production');--> statement-breakpoint
 CREATE TYPE "public"."request_status" AS ENUM('open', 'claimed', 'held_blind', 'accepted', 'rejected', 'escalated');--> statement-breakpoint
 CREATE TYPE "public"."workspace_role" AS ENUM('admin', 'operator', 'reviewer', 'adjudicator');--> statement-breakpoint
+CREATE TABLE "account" (
+	"id" text PRIMARY KEY NOT NULL,
+	"account_id" text NOT NULL,
+	"provider_id" text NOT NULL,
+	"user_id" text NOT NULL,
+	"access_token" text,
+	"refresh_token" text,
+	"id_token" text,
+	"access_token_expires_at" timestamp,
+	"refresh_token_expires_at" timestamp,
+	"scope" text,
+	"password" text,
+	"created_at" timestamp NOT NULL,
+	"updated_at" timestamp NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "activity_logs" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"workspace_id" integer NOT NULL,
-	"user_id" integer,
+	"user_id" text,
 	"action" text NOT NULL,
 	"timestamp" timestamp DEFAULT now() NOT NULL,
 	"ip_address" varchar(45)
@@ -39,7 +55,7 @@ CREATE TABLE "annotations" (
 	"request_id" uuid NOT NULL,
 	"born_round" integer NOT NULL,
 	"born_version_id" uuid NOT NULL,
-	"author_user_id" integer NOT NULL,
+	"author_user_id" text NOT NULL,
 	"body" text NOT NULL,
 	"expected" text,
 	"quote" text NOT NULL,
@@ -49,7 +65,7 @@ CREATE TABLE "annotations" (
 	"end_pos" integer NOT NULL,
 	"parent_id" uuid,
 	"resolved_at" timestamp,
-	"resolved_by" integer,
+	"resolved_by" text,
 	"retired_at" timestamp,
 	"retire_reason" text,
 	"created_at" timestamp DEFAULT now() NOT NULL
@@ -106,7 +122,7 @@ CREATE TABLE "criteria_verdicts" (
 	"version_id" uuid NOT NULL,
 	"criterion_id" uuid NOT NULL,
 	"verdict" "criterion_verdict" NOT NULL,
-	"user_id" integer NOT NULL,
+	"user_id" text NOT NULL,
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
@@ -118,7 +134,7 @@ CREATE TABLE "decisions" (
 	"round" integer NOT NULL,
 	"kind" "decision_kind" NOT NULL,
 	"reason" text,
-	"decided_by" integer NOT NULL,
+	"decided_by" text NOT NULL,
 	"sealed_hash" varchar(64),
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
@@ -139,7 +155,7 @@ CREATE TABLE "invitations" (
 	"workspace_id" integer NOT NULL,
 	"email" varchar(255) NOT NULL,
 	"role" "workspace_role" DEFAULT 'reviewer' NOT NULL,
-	"invited_by" integer NOT NULL,
+	"invited_by" text NOT NULL,
 	"invited_at" timestamp DEFAULT now() NOT NULL,
 	"status" varchar(20) DEFAULT 'pending' NOT NULL
 );
@@ -147,7 +163,7 @@ CREATE TABLE "invitations" (
 CREATE TABLE "leases" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"request_id" uuid NOT NULL,
-	"user_id" integer NOT NULL,
+	"user_id" text NOT NULL,
 	"expires_at" timestamp NOT NULL,
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
@@ -157,7 +173,7 @@ CREATE TABLE "policy_versions" (
 	"queue_id" uuid NOT NULL,
 	"version" integer NOT NULL,
 	"config" jsonb NOT NULL,
-	"created_by" integer,
+	"created_by" text,
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
@@ -190,7 +206,7 @@ CREATE TABLE "repin_history" (
 	"new_quote" text NOT NULL,
 	"new_start_pos" integer NOT NULL,
 	"new_end_pos" integer NOT NULL,
-	"user_id" integer NOT NULL,
+	"user_id" text NOT NULL,
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
@@ -209,7 +225,7 @@ CREATE TABLE "review_requests" (
 	"priority" integer DEFAULT 3 NOT NULL,
 	"status" "request_status" DEFAULT 'open' NOT NULL,
 	"round" integer DEFAULT 1 NOT NULL,
-	"sticky_reviewer_id" integer,
+	"sticky_reviewer_id" text,
 	"pipeline_run_id" varchar(255),
 	"trace_id" varchar(255),
 	"prompt" text,
@@ -222,15 +238,36 @@ CREATE TABLE "review_requests" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE "users" (
-	"id" serial PRIMARY KEY NOT NULL,
-	"name" varchar(100),
-	"email" varchar(255) NOT NULL,
-	"password_hash" text NOT NULL,
-	"created_at" timestamp DEFAULT now() NOT NULL,
-	"updated_at" timestamp DEFAULT now() NOT NULL,
-	"deleted_at" timestamp,
-	CONSTRAINT "users_email_unique" UNIQUE("email")
+CREATE TABLE "session" (
+	"id" text PRIMARY KEY NOT NULL,
+	"expires_at" timestamp NOT NULL,
+	"token" text NOT NULL,
+	"created_at" timestamp NOT NULL,
+	"updated_at" timestamp NOT NULL,
+	"ip_address" text,
+	"user_agent" text,
+	"user_id" text NOT NULL,
+	CONSTRAINT "session_token_unique" UNIQUE("token")
+);
+--> statement-breakpoint
+CREATE TABLE "user" (
+	"id" text PRIMARY KEY NOT NULL,
+	"name" text NOT NULL,
+	"email" text NOT NULL,
+	"email_verified" boolean NOT NULL,
+	"image" text,
+	"created_at" timestamp NOT NULL,
+	"updated_at" timestamp NOT NULL,
+	CONSTRAINT "user_email_unique" UNIQUE("email")
+);
+--> statement-breakpoint
+CREATE TABLE "verification" (
+	"id" text PRIMARY KEY NOT NULL,
+	"identifier" text NOT NULL,
+	"value" text NOT NULL,
+	"expires_at" timestamp NOT NULL,
+	"created_at" timestamp,
+	"updated_at" timestamp
 );
 --> statement-breakpoint
 CREATE TABLE "version_responses" (
@@ -264,7 +301,7 @@ CREATE TABLE "webhook_endpoints" (
 --> statement-breakpoint
 CREATE TABLE "workspace_members" (
 	"id" serial PRIMARY KEY NOT NULL,
-	"user_id" integer NOT NULL,
+	"user_id" text NOT NULL,
 	"workspace_id" integer NOT NULL,
 	"role" "workspace_role" DEFAULT 'reviewer' NOT NULL,
 	"joined_at" timestamp DEFAULT now() NOT NULL
@@ -280,14 +317,15 @@ CREATE TABLE "workspaces" (
 	CONSTRAINT "workspaces_slug_unique" UNIQUE("slug")
 );
 --> statement-breakpoint
+ALTER TABLE "account" ADD CONSTRAINT "account_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "activity_logs" ADD CONSTRAINT "activity_logs_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "activity_logs" ADD CONSTRAINT "activity_logs_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "activity_logs" ADD CONSTRAINT "activity_logs_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "anchor_states" ADD CONSTRAINT "anchor_states_annotation_id_annotations_id_fk" FOREIGN KEY ("annotation_id") REFERENCES "public"."annotations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "anchor_states" ADD CONSTRAINT "anchor_states_version_id_artifact_versions_id_fk" FOREIGN KEY ("version_id") REFERENCES "public"."artifact_versions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "annotations" ADD CONSTRAINT "annotations_request_id_review_requests_id_fk" FOREIGN KEY ("request_id") REFERENCES "public"."review_requests"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "annotations" ADD CONSTRAINT "annotations_born_version_id_artifact_versions_id_fk" FOREIGN KEY ("born_version_id") REFERENCES "public"."artifact_versions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "annotations" ADD CONSTRAINT "annotations_author_user_id_users_id_fk" FOREIGN KEY ("author_user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "annotations" ADD CONSTRAINT "annotations_resolved_by_users_id_fk" FOREIGN KEY ("resolved_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "annotations" ADD CONSTRAINT "annotations_author_user_id_user_id_fk" FOREIGN KEY ("author_user_id") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "annotations" ADD CONSTRAINT "annotations_resolved_by_user_id_fk" FOREIGN KEY ("resolved_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "api_keys" ADD CONSTRAINT "api_keys_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "artifact_versions" ADD CONSTRAINT "artifact_versions_request_id_review_requests_id_fk" FOREIGN KEY ("request_id") REFERENCES "public"."review_requests"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "context_files" ADD CONSTRAINT "context_files_request_id_review_requests_id_fk" FOREIGN KEY ("request_id") REFERENCES "public"."review_requests"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -295,31 +333,32 @@ ALTER TABLE "criteria" ADD CONSTRAINT "criteria_queue_id_queues_id_fk" FOREIGN K
 ALTER TABLE "criteria_verdicts" ADD CONSTRAINT "criteria_verdicts_request_id_review_requests_id_fk" FOREIGN KEY ("request_id") REFERENCES "public"."review_requests"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "criteria_verdicts" ADD CONSTRAINT "criteria_verdicts_version_id_artifact_versions_id_fk" FOREIGN KEY ("version_id") REFERENCES "public"."artifact_versions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "criteria_verdicts" ADD CONSTRAINT "criteria_verdicts_criterion_id_criteria_id_fk" FOREIGN KEY ("criterion_id") REFERENCES "public"."criteria"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "criteria_verdicts" ADD CONSTRAINT "criteria_verdicts_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "criteria_verdicts" ADD CONSTRAINT "criteria_verdicts_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "decisions" ADD CONSTRAINT "decisions_request_id_review_requests_id_fk" FOREIGN KEY ("request_id") REFERENCES "public"."review_requests"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "decisions" ADD CONSTRAINT "decisions_version_id_artifact_versions_id_fk" FOREIGN KEY ("version_id") REFERENCES "public"."artifact_versions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decisions" ADD CONSTRAINT "decisions_decided_by_users_id_fk" FOREIGN KEY ("decided_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "decisions" ADD CONSTRAINT "decisions_decided_by_user_id_fk" FOREIGN KEY ("decided_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "events" ADD CONSTRAINT "events_request_id_review_requests_id_fk" FOREIGN KEY ("request_id") REFERENCES "public"."review_requests"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "invitations" ADD CONSTRAINT "invitations_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "invitations" ADD CONSTRAINT "invitations_invited_by_users_id_fk" FOREIGN KEY ("invited_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "invitations" ADD CONSTRAINT "invitations_invited_by_user_id_fk" FOREIGN KEY ("invited_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "leases" ADD CONSTRAINT "leases_request_id_review_requests_id_fk" FOREIGN KEY ("request_id") REFERENCES "public"."review_requests"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "leases" ADD CONSTRAINT "leases_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "leases" ADD CONSTRAINT "leases_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "policy_versions" ADD CONSTRAINT "policy_versions_queue_id_queues_id_fk" FOREIGN KEY ("queue_id") REFERENCES "public"."queues"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "policy_versions" ADD CONSTRAINT "policy_versions_created_by_users_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "policy_versions" ADD CONSTRAINT "policy_versions_created_by_user_id_fk" FOREIGN KEY ("created_by") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "projects" ADD CONSTRAINT "projects_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "queues" ADD CONSTRAINT "queues_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "repin_history" ADD CONSTRAINT "repin_history_annotation_id_annotations_id_fk" FOREIGN KEY ("annotation_id") REFERENCES "public"."annotations"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "repin_history" ADD CONSTRAINT "repin_history_version_id_artifact_versions_id_fk" FOREIGN KEY ("version_id") REFERENCES "public"."artifact_versions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "repin_history" ADD CONSTRAINT "repin_history_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "repin_history" ADD CONSTRAINT "repin_history_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "request_tags" ADD CONSTRAINT "request_tags_request_id_review_requests_id_fk" FOREIGN KEY ("request_id") REFERENCES "public"."review_requests"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "review_requests" ADD CONSTRAINT "review_requests_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "review_requests" ADD CONSTRAINT "review_requests_queue_id_queues_id_fk" FOREIGN KEY ("queue_id") REFERENCES "public"."queues"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "review_requests" ADD CONSTRAINT "review_requests_sticky_reviewer_id_users_id_fk" FOREIGN KEY ("sticky_reviewer_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "review_requests" ADD CONSTRAINT "review_requests_sticky_reviewer_id_user_id_fk" FOREIGN KEY ("sticky_reviewer_id") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "review_requests" ADD CONSTRAINT "review_requests_policy_version_id_policy_versions_id_fk" FOREIGN KEY ("policy_version_id") REFERENCES "public"."policy_versions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "session" ADD CONSTRAINT "session_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "version_responses" ADD CONSTRAINT "version_responses_version_id_artifact_versions_id_fk" FOREIGN KEY ("version_id") REFERENCES "public"."artifact_versions"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "webhook_deliveries" ADD CONSTRAINT "webhook_deliveries_endpoint_id_webhook_endpoints_id_fk" FOREIGN KEY ("endpoint_id") REFERENCES "public"."webhook_endpoints"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "webhook_endpoints" ADD CONSTRAINT "webhook_endpoints_project_id_projects_id_fk" FOREIGN KEY ("project_id") REFERENCES "public"."projects"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "workspace_members" ADD CONSTRAINT "workspace_members_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "workspace_members" ADD CONSTRAINT "workspace_members_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workspace_members" ADD CONSTRAINT "workspace_members_workspace_id_workspaces_id_fk" FOREIGN KEY ("workspace_id") REFERENCES "public"."workspaces"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 CREATE UNIQUE INDEX "anchor_states_annotation_version_uq" ON "anchor_states" USING btree ("annotation_id","version_id");--> statement-breakpoint
 CREATE INDEX "annotations_request_idx" ON "annotations" USING btree ("request_id");--> statement-breakpoint

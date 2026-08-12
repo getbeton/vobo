@@ -1,8 +1,9 @@
 import { randomBytes, createHash } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { db } from './drizzle';
+import { eq as eqOp } from 'drizzle-orm';
 import {
-  users,
+  user as userTable,
   workspaces,
   workspaceMembers,
   projects,
@@ -11,7 +12,7 @@ import {
   criteria,
   apiKeys,
 } from './schema';
-import { hashPassword } from '@/lib/auth/session';
+import { auth } from '@/lib/auth/auth';
 import { DEFAULT_POLICY } from '@/lib/core/policy';
 
 /**
@@ -64,14 +65,20 @@ async function seed() {
   const email = process.env.SEED_EMAIL || 'v@getbeton.ai';
   const password = process.env.SEED_PASSWORD || randomBytes(12).toString('base64url');
 
-  const existing = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  const existing = await db
+    .select()
+    .from(userTable)
+    .where(eqOp(userTable.email, email))
+    .limit(1);
   if (existing.length > 0) {
     console.log(`Seed user ${email} already exists — aborting (idempotent no-op).`);
     return;
   }
 
-  const passwordHash = await hashPassword(password);
-  const [user] = await db.insert(users).values({ email, passwordHash, name: 'Vlad' }).returning();
+  const signUp = await auth.api.signUpEmail({
+    body: { email, password, name: 'Vlad' },
+  });
+  const user = signUp.user;
 
   const [ws] = await db
     .insert(workspaces)
