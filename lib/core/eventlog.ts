@@ -3,6 +3,7 @@ import { db as defaultDb } from '@/lib/db/drizzle';
 import { events, webhookEndpoints, webhookDeliveries, reviewRequests } from '@/lib/db/schema';
 import { GENESIS_HASH, computeEventHash, verifyChain, ChainRow } from './events';
 import { getStorage } from '@/lib/storage';
+import { captureDomainEvent } from '@/lib/analytics/posthog';
 
 export type Db = typeof defaultDb;
 export type Tx = Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -61,6 +62,14 @@ export async function appendEvent(
       }
     }
   }
+
+  // Product analytics ride the same taxonomy (no-op unless POSTHOG_KEY is set).
+  void captureDomainEvent({
+    type,
+    requestId,
+    distinctId: typeof payload.userId === 'string' ? payload.userId : null,
+    payload,
+  });
 
   // Best-effort JSONL mirror to BYO storage (offline archive). Non-fatal.
   try {
