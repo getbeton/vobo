@@ -9,8 +9,9 @@
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
     "test": "vitest run",
-    "worker": "npx tsx worker/index.ts",
-    "mcp": "npx tsx mcp/server.ts"
+    "worker": "node scripts/migrate.mjs && npx tsx worker/index.ts",
+    "mcp": "npx tsx mcp/server.ts",
+    "boot": "node scripts/migrate.mjs && next start"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1108.0",
@@ -43,13 +44,13 @@
     "tailwindcss": "4.1.7",
     "tw-animate-css": "^1.3.0",
     "typescript": "^5.8.3",
-    "zod": "^3.25.76"
+    "zod": "^3.25.76",
+    "tsx": "^4.23.12"
   },
   "name": "vobo",
   "version": "0.0.1",
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.4",
-    "tsx": "^4.23.12",
     "vitest": "^3.2.7"
   }
 }
