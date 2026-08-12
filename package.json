@@ -4,17 +4,20 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "db:setup": "npx tsx lib/db/setup.ts",
     "db:seed": "npx tsx lib/db/seed.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "db:studio": "drizzle-kit studio"
+    "db:studio": "drizzle-kit studio",
+    "test": "vitest run",
+    "worker": "npx tsx worker/index.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1108.0",
     "@tailwindcss/postcss": "4.1.7",
     "@types/node": "^22.15.18",
     "@types/react": "19.1.4",
     "@types/react-dom": "19.1.5",
+    "approx-string-match": "^2.0.0",
     "autoprefixer": "^10.4.21",
     "bcryptjs": "^3.0.2",
     "class-variance-authority": "^0.7.1",
@@ -25,6 +28,7 @@
     "jose": "^6.0.11",
     "lucide-react": "^0.511.0",
     "next": "15.6.0-canary.59",
+    "pg-boss": "^12.27.0",
     "postcss": "^8.5.3",
     "postgres": "^3.4.5",
     "radix-ui": "^1.4.2",
@@ -40,5 +44,10 @@
     "zod": "^3.24.4"
   },
   "name": "vobo",
-  "version": "0.0.1"
+  "version": "0.0.1",
+  "devDependencies": {
+    "@types/bcryptjs": "^3.0.0",
+    "tsx": "^4.23.12",
+    "vitest": "^4.1.10"
+  }
 }

@@ -21,9 +21,9 @@ const iconMap: Record<ActivityType, LucideIcon> = {
   [ActivityType.UPDATE_PASSWORD]: Lock,
   [ActivityType.DELETE_ACCOUNT]: UserMinus,
   [ActivityType.UPDATE_ACCOUNT]: Settings,
-  [ActivityType.CREATE_TEAM]: UserPlus,
-  [ActivityType.REMOVE_TEAM_MEMBER]: UserMinus,
-  [ActivityType.INVITE_TEAM_MEMBER]: Mail,
+  [ActivityType.CREATE_WORKSPACE]: UserPlus,
+  [ActivityType.REMOVE_WORKSPACE_MEMBER]: UserMinus,
+  [ActivityType.INVITE_WORKSPACE_MEMBER]: Mail,
   [ActivityType.ACCEPT_INVITATION]: CheckCircle,
 };
 
@@ -55,12 +55,12 @@ function formatAction(action: ActivityType): string {
       return 'You deleted your account';
     case ActivityType.UPDATE_ACCOUNT:
       return 'You updated your account';
-    case ActivityType.CREATE_TEAM:
-      return 'You created a new team';
-    case ActivityType.REMOVE_TEAM_MEMBER:
-      return 'You removed a team member';
-    case ActivityType.INVITE_TEAM_MEMBER:
-      return 'You invited a team member';
+    case ActivityType.CREATE_WORKSPACE:
+      return 'You created a new workspace';
+    case ActivityType.REMOVE_WORKSPACE_MEMBER:
+      return 'You removed a workspace member';
+    case ActivityType.INVITE_WORKSPACE_MEMBER:
+      return 'You invited a workspace member';
     case ActivityType.ACCEPT_INVITATION:
       return 'You accepted an invitation';
     default:

@@ -1,66 +1,135 @@
 import {
   pgTable,
+  pgEnum,
   serial,
   varchar,
   text,
   timestamp,
   integer,
+  boolean,
+  uuid,
+  bigserial,
+  jsonb,
+  uniqueIndex,
+  index,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+export const workspaceRoleEnum = pgEnum('workspace_role', [
+  'admin',
+  'operator',
+  'reviewer',
+  'adjudicator', // reserved; no adjudication UI in MVP
+]);
+
+export const queueEnvironmentEnum = pgEnum('queue_environment', [
+  'test',
+  'production',
+]);
+
+export const requestStatusEnum = pgEnum('request_status', [
+  'open',
+  'claimed',
+  'held_blind', // reserved; blindN=0 in MVP policies
+  'accepted',
+  'rejected', // rejected and awaiting the next version
+  'escalated',
+]);
+
+export const authorKindEnum = pgEnum('author_kind', ['model', 'human']);
+
+export const anchorStateEnum = pgEnum('anchor_state', [
+  'new', // born this round
+  'resolved',
+  'persisting',
+  'orphaned',
+  'repinned',
+]);
+
+export const anchorConfidenceEnum = pgEnum('anchor_confidence', [
+  'high',
+  'med',
+  'low',
+]);
+
+export const anchorConfirmationEnum = pgEnum('anchor_confirmation', [
+  'res', // human confirmed resolved
+  'per', // human marked persisting (re-asserts into next event)
+]);
+
+export const criterionVerdictEnum = pgEnum('criterion_verdict', [
+  'pass',
+  'fail',
+  'na',
+]);
+
+export const decisionKindEnum = pgEnum('decision_kind', [
+  'approve',
+  'approve_edited',
+  'reject_rerun',
+  'reject_corrections',
+  'escalate',
+]);
+
+export const deliveryStatusEnum = pgEnum('delivery_status', [
+  'pending',
+  'delivered', // 2xx received = acked
+  'failed', // retrying
+  'dead', // retries exhausted (DLQ)
+]);
+
+// ---------------------------------------------------------------------------
+// Identity & tenancy (Workspace → Project → Queue)
+// ---------------------------------------------------------------------------
 
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
   name: varchar('name', { length: 100 }),
   email: varchar('email', { length: 255 }).notNull().unique(),
   passwordHash: text('password_hash').notNull(),
-  role: varchar('role', { length: 20 }).notNull().default('member'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
   deletedAt: timestamp('deleted_at'),
 });
 
-export const teams = pgTable('teams', {
+export const workspaces = pgTable('workspaces', {
   id: serial('id').primaryKey(),
   name: varchar('name', { length: 100 }).notNull(),
+  slug: varchar('slug', { length: 64 }).notNull().unique(),
+  // Policy defaults inherited by projects/queues (zod-validated JSON; the one
+  // deliberate settings column — see ARD §4 / Argilla pattern).
+  policyDefaults: jsonb('policy_defaults').notNull().default({}),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
-  stripeCustomerId: text('stripe_customer_id').unique(),
-  stripeSubscriptionId: text('stripe_subscription_id').unique(),
-  stripeProductId: text('stripe_product_id'),
-  planName: varchar('plan_name', { length: 50 }),
-  subscriptionStatus: varchar('subscription_status', { length: 20 }),
 });
 
-export const teamMembers = pgTable('team_members', {
-  id: serial('id').primaryKey(),
-  userId: integer('user_id')
-    .notNull()
-    .references(() => users.id),
-  teamId: integer('team_id')
-    .notNull()
-    .references(() => teams.id),
-  role: varchar('role', { length: 50 }).notNull(),
-  joinedAt: timestamp('joined_at').notNull().defaultNow(),
-});
-
-export const activityLogs = pgTable('activity_logs', {
-  id: serial('id').primaryKey(),
-  teamId: integer('team_id')
-    .notNull()
-    .references(() => teams.id),
-  userId: integer('user_id').references(() => users.id),
-  action: text('action').notNull(),
-  timestamp: timestamp('timestamp').notNull().defaultNow(),
-  ipAddress: varchar('ip_address', { length: 45 }),
-});
+export const workspaceMembers = pgTable(
+  'workspace_members',
+  {
+    id: serial('id').primaryKey(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id),
+    workspaceId: integer('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+    role: workspaceRoleEnum('role').notNull().default('reviewer'),
+    joinedAt: timestamp('joined_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('workspace_members_user_ws_uq').on(t.userId, t.workspaceId)]
+);
 
 export const invitations = pgTable('invitations', {
   id: serial('id').primaryKey(),
-  teamId: integer('team_id')
+  workspaceId: integer('workspace_id')
     .notNull()
-    .references(() => teams.id),
+    .references(() => workspaces.id),
   email: varchar('email', { length: 255 }).notNull(),
-  role: varchar('role', { length: 50 }).notNull(),
+  role: workspaceRoleEnum('role').notNull().default('reviewer'),
   invitedBy: integer('invited_by')
     .notNull()
     .references(() => users.id),
@@ -68,62 +137,566 @@ export const invitations = pgTable('invitations', {
   status: varchar('status', { length: 20 }).notNull().default('pending'),
 });
 
-export const teamsRelations = relations(teams, ({ many }) => ({
-  teamMembers: many(teamMembers),
-  activityLogs: many(activityLogs),
+export const activityLogs = pgTable('activity_logs', {
+  id: serial('id').primaryKey(),
+  workspaceId: integer('workspace_id')
+    .notNull()
+    .references(() => workspaces.id),
+  userId: integer('user_id').references(() => users.id),
+  action: text('action').notNull(),
+  timestamp: timestamp('timestamp').notNull().defaultNow(),
+  ipAddress: varchar('ip_address', { length: 45 }),
+});
+
+export const projects = pgTable(
+  'projects',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: integer('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+    name: varchar('name', { length: 100 }).notNull(),
+    slug: varchar('slug', { length: 64 }).notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('projects_ws_slug_uq').on(t.workspaceId, t.slug)]
+);
+
+export const apiKeys = pgTable('api_keys', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id')
+    .notNull()
+    .references(() => projects.id),
+  name: varchar('name', { length: 100 }).notNull(),
+  keyHash: text('key_hash').notNull().unique(), // sha256 of the bearer token
+  keyPrefix: varchar('key_prefix', { length: 12 }).notNull(), // display only
+  // Server-side pull cursor: last event id this key's consumer has seen.
+  // Consumers keep zero local state (ARD §9).
+  cursorEventId: integer('cursor_event_id'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  lastUsedAt: timestamp('last_used_at'),
+  revokedAt: timestamp('revoked_at'),
+});
+
+// ---------------------------------------------------------------------------
+// Queues, policy versions, criteria
+// ---------------------------------------------------------------------------
+
+export const queues = pgTable(
+  'queues',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id),
+    name: varchar('name', { length: 100 }).notNull(),
+    slug: varchar('slug', { length: 64 }).notNull(),
+    environment: queueEnvironmentEnum('environment').notNull().default('production'),
+    openForReview: boolean('open_for_review').notNull().default(true),
+    // Set after the first policy version is created (circular FK avoided by
+    // keeping this nullable and pointing at policy_versions.id).
+    activePolicyVersionId: uuid('active_policy_version_id'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('queues_project_slug_env_uq').on(t.projectId, t.slug, t.environment)]
+);
+
+// Every policy change creates a new immutable version (ARD: reversible, never
+// a silent mutation). `config` is zod-validated at the boundary; shape lives
+// in lib/core/policy.ts.
+export const policyVersions = pgTable(
+  'policy_versions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    queueId: uuid('queue_id')
+      .notNull()
+      .references(() => queues.id),
+    version: integer('version').notNull(),
+    config: jsonb('config').notNull(),
+    createdBy: integer('created_by').references(() => users.id),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('policy_versions_queue_version_uq').on(t.queueId, t.version)]
+);
+
+export const criteria = pgTable(
+  'criteria',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    queueId: uuid('queue_id')
+      .notNull()
+      .references(() => queues.id),
+    key: varchar('key', { length: 64 }).notNull(),
+    title: varchar('title', { length: 200 }).notNull(),
+    description: text('description'),
+    position: integer('position').notNull().default(0),
+    archivedAt: timestamp('archived_at'),
+  },
+  (t) => [uniqueIndex('criteria_queue_key_uq').on(t.queueId, t.key)]
+);
+
+// ---------------------------------------------------------------------------
+// Review requests & artifact versions
+// ---------------------------------------------------------------------------
+
+export const reviewRequests = pgTable(
+  'review_requests',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id),
+    queueId: uuid('queue_id')
+      .notNull()
+      .references(() => queues.id),
+    // Customer-owned identity: the stacking contract (ARD §9). Upsert key.
+    customerRequestId: varchar('customer_request_id', { length: 255 }).notNull(),
+    title: varchar('title', { length: 300 }).notNull(),
+    priority: integer('priority').notNull().default(3), // 1 = highest
+    status: requestStatusEnum('status').notNull().default('open'),
+    round: integer('round').notNull().default(1),
+    stickyReviewerId: integer('sticky_reviewer_id').references(() => users.id),
+    pipelineRunId: varchar('pipeline_run_id', { length: 255 }),
+    traceId: varchar('trace_id', { length: 255 }),
+    // Context bundle (what the reviewer judges against)
+    prompt: text('prompt'),
+    source: text('source'),
+    slaDueAt: timestamp('sla_due_at'),
+    // Policy version stamped at creation; carried into every signed event.
+    policyVersionId: uuid('policy_version_id')
+      .notNull()
+      .references(() => policyVersions.id),
+    acceptedVersionId: uuid('accepted_version_id'),
+    acceptedHash: varchar('accepted_hash', { length: 64 }),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('review_requests_project_customer_uq').on(
+      t.projectId,
+      t.customerRequestId
+    ),
+    index('review_requests_queue_status_idx').on(t.queueId, t.status),
+    index('review_requests_updated_idx').on(t.updatedAt),
+  ]
+);
+
+export const requestTags = pgTable(
+  'request_tags',
+  {
+    id: serial('id').primaryKey(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => reviewRequests.id),
+    tag: varchar('tag', { length: 100 }).notNull(),
+  },
+  (t) => [uniqueIndex('request_tags_uq').on(t.requestId, t.tag)]
+);
+
+export const contextFiles = pgTable('context_files', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  requestId: uuid('request_id')
+    .notNull()
+    .references(() => reviewRequests.id),
+  name: varchar('name', { length: 255 }).notNull(),
+  s3Key: text('s3_key').notNull(),
+  contentType: varchar('content_type', { length: 100 }),
+  size: integer('size'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const artifactVersions = pgTable(
+  'artifact_versions',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => reviewRequests.id),
+    versionNumber: integer('version_number').notNull(), // 1-based
+    authorKind: authorKindEnum('author_kind').notNull().default('model'),
+    authorLabel: varchar('author_label', { length: 200 }), // e.g. "model run · support-gen-2"
+    contentMd: text('content_md').notNull(), // markdown-only MVP
+    contentHash: varchar('content_hash', { length: 64 }).notNull(), // sha256 hex
+    humanAuthored: boolean('human_authored').notNull().default(false),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('artifact_versions_request_number_uq').on(
+      t.requestId,
+      t.versionNumber
+    ),
+    // Idempotency backstop: same parent+content never stacks twice.
+    uniqueIndex('artifact_versions_request_hash_number_uq').on(
+      t.requestId,
+      t.contentHash,
+      t.versionNumber
+    ),
+  ]
+);
+
+// Optional per-finding responses riding on a version submission
+// ("needs clarification" instead of a guessed fix — ARD §9).
+export const versionResponses = pgTable('version_responses', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  versionId: uuid('version_id')
+    .notNull()
+    .references(() => artifactVersions.id),
+  annotationId: uuid('annotation_id').notNull(),
+  note: text('note').notNull(),
+});
+
+// ---------------------------------------------------------------------------
+// Annotations (anchored comments) & re-anchoring state
+// ---------------------------------------------------------------------------
+
+export const annotations = pgTable(
+  'annotations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => reviewRequests.id),
+    bornRound: integer('born_round').notNull(),
+    bornVersionId: uuid('born_version_id')
+      .notNull()
+      .references(() => artifactVersions.id),
+    authorUserId: integer('author_user_id')
+      .notNull()
+      .references(() => users.id),
+    body: text('body').notNull(),
+    expected: text('expected'), // the testable expected outcome (PRD s3.1.2)
+    // W3C-style dual anchor: TextQuote (quote+prefix+suffix) + TextPosition
+    quote: text('quote').notNull(),
+    prefix: text('prefix').notNull().default(''),
+    suffix: text('suffix').notNull().default(''),
+    startPos: integer('start_pos').notNull(),
+    endPos: integer('end_pos').notNull(),
+    parentId: uuid('parent_id'), // thread reply → parent annotation
+    resolvedAt: timestamp('resolved_at'), // resolve unblocks approve; does NOT ship
+    resolvedBy: integer('resolved_by').references(() => users.id),
+    retiredAt: timestamp('retired_at'),
+    retireReason: text('retire_reason'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [index('annotations_request_idx').on(t.requestId)]
+);
+
+// Classification of every prior annotation against every later version.
+export const anchorStates = pgTable(
+  'anchor_states',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    annotationId: uuid('annotation_id')
+      .notNull()
+      .references(() => annotations.id),
+    versionId: uuid('version_id')
+      .notNull()
+      .references(() => artifactVersions.id),
+    state: anchorStateEnum('state').notNull(),
+    confidence: anchorConfidenceEnum('confidence').notNull(),
+    // Landing spot on this version (null when orphaned)
+    newQuote: text('new_quote'),
+    newPrefix: text('new_prefix'),
+    newSuffix: text('new_suffix'),
+    newStartPos: integer('new_start_pos'),
+    newEndPos: integer('new_end_pos'),
+    confirmation: anchorConfirmationEnum('confirmation'), // human override wins
+    reasserted: boolean('reasserted').notNull().default(false),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('anchor_states_annotation_version_uq').on(t.annotationId, t.versionId)]
+);
+
+// Original selectors are never lost: every manual re-pin appends here.
+export const repinHistory = pgTable('repin_history', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  annotationId: uuid('annotation_id')
+    .notNull()
+    .references(() => annotations.id),
+  versionId: uuid('version_id')
+    .notNull()
+    .references(() => artifactVersions.id),
+  oldQuote: text('old_quote'),
+  oldStartPos: integer('old_start_pos'),
+  oldEndPos: integer('old_end_pos'),
+  newQuote: text('new_quote').notNull(),
+  newStartPos: integer('new_start_pos').notNull(),
+  newEndPos: integer('new_end_pos').notNull(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => users.id),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+// ---------------------------------------------------------------------------
+// Criteria verdicts & decisions
+// ---------------------------------------------------------------------------
+
+export const criteriaVerdicts = pgTable(
+  'criteria_verdicts',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => reviewRequests.id),
+    versionId: uuid('version_id')
+      .notNull()
+      .references(() => artifactVersions.id),
+    criterionId: uuid('criterion_id')
+      .notNull()
+      .references(() => criteria.id),
+    verdict: criterionVerdictEnum('verdict').notNull(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('criteria_verdicts_version_criterion_user_uq').on(
+      t.versionId,
+      t.criterionId,
+      t.userId
+    ),
+  ]
+);
+
+export const decisions = pgTable('decisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  requestId: uuid('request_id')
+    .notNull()
+    .references(() => reviewRequests.id),
+  versionId: uuid('version_id')
+    .notNull()
+    .references(() => artifactVersions.id),
+  round: integer('round').notNull(),
+  kind: decisionKindEnum('kind').notNull(),
+  reason: text('reason'), // required (≥4 chars) for escalate; enforced in service
+  decidedBy: integer('decided_by')
+    .notNull()
+    .references(() => users.id),
+  sealedHash: varchar('sealed_hash', { length: 64 }), // set on approve/approve_edited
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+// ---------------------------------------------------------------------------
+// Events (append-only, per-request hash chain) & webhook delivery
+// ---------------------------------------------------------------------------
+
+export const events = pgTable(
+  'events',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => reviewRequests.id),
+    seq: integer('seq').notNull(), // 1-based within request
+    type: varchar('type', { length: 64 }).notNull(),
+    payload: jsonb('payload').notNull(),
+    prevHash: varchar('prev_hash', { length: 64 }).notNull(), // 64 zeros at genesis
+    hash: varchar('hash', { length: 64 }).notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('events_request_seq_uq').on(t.requestId, t.seq),
+    index('events_id_request_idx').on(t.id, t.requestId),
+  ]
+);
+
+export const webhookEndpoints = pgTable('webhook_endpoints', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  projectId: uuid('project_id')
+    .notNull()
+    .references(() => projects.id),
+  url: text('url').notNull(),
+  secret: text('secret').notNull(), // Standard Webhooks signing secret (whsec_…)
+  eventTypes: jsonb('event_types').notNull().default([]), // [] = all
+  active: boolean('active').notNull().default(true),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+});
+
+export const webhookDeliveries = pgTable(
+  'webhook_deliveries',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    eventId: integer('event_id').notNull(),
+    endpointId: uuid('endpoint_id')
+      .notNull()
+      .references(() => webhookEndpoints.id),
+    status: deliveryStatusEnum('status').notNull().default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    lastAttemptAt: timestamp('last_attempt_at'),
+    ackedAt: timestamp('acked_at'),
+    responseCode: integer('response_code'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('webhook_deliveries_event_endpoint_uq').on(t.eventId, t.endpointId)]
+);
+
+// ---------------------------------------------------------------------------
+// Leases (atomic claims)
+// ---------------------------------------------------------------------------
+
+export const leases = pgTable(
+  'leases',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => reviewRequests.id),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id),
+    expiresAt: timestamp('expires_at').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('leases_request_uq').on(t.requestId)]
+);
+
+// ---------------------------------------------------------------------------
+// Relations (query-layer sugar)
+// ---------------------------------------------------------------------------
+
+export const workspacesRelations = relations(workspaces, ({ many }) => ({
+  members: many(workspaceMembers),
+  projects: many(projects),
   invitations: many(invitations),
 }));
 
 export const usersRelations = relations(users, ({ many }) => ({
-  teamMembers: many(teamMembers),
-  invitationsSent: many(invitations),
+  memberships: many(workspaceMembers),
+}));
+
+export const workspaceMembersRelations = relations(workspaceMembers, ({ one }) => ({
+  user: one(users, { fields: [workspaceMembers.userId], references: [users.id] }),
+  workspace: one(workspaces, {
+    fields: [workspaceMembers.workspaceId],
+    references: [workspaces.id],
+  }),
 }));
 
 export const invitationsRelations = relations(invitations, ({ one }) => ({
-  team: one(teams, {
-    fields: [invitations.teamId],
-    references: [teams.id],
+  workspace: one(workspaces, {
+    fields: [invitations.workspaceId],
+    references: [workspaces.id],
   }),
-  invitedBy: one(users, {
+  invitedByUser: one(users, {
     fields: [invitations.invitedBy],
     references: [users.id],
   }),
 }));
 
-export const teamMembersRelations = relations(teamMembers, ({ one }) => ({
-  user: one(users, {
-    fields: [teamMembers.userId],
-    references: [users.id],
+export const projectsRelations = relations(projects, ({ one, many }) => ({
+  workspace: one(workspaces, {
+    fields: [projects.workspaceId],
+    references: [workspaces.id],
   }),
-  team: one(teams, {
-    fields: [teamMembers.teamId],
-    references: [teams.id],
+  queues: many(queues),
+  apiKeys: many(apiKeys),
+}));
+
+export const queuesRelations = relations(queues, ({ one, many }) => ({
+  project: one(projects, { fields: [queues.projectId], references: [projects.id] }),
+  policyVersions: many(policyVersions),
+  criteria: many(criteria),
+  requests: many(reviewRequests),
+}));
+
+export const reviewRequestsRelations = relations(reviewRequests, ({ one, many }) => ({
+  queue: one(queues, { fields: [reviewRequests.queueId], references: [queues.id] }),
+  project: one(projects, {
+    fields: [reviewRequests.projectId],
+    references: [projects.id],
+  }),
+  versions: many(artifactVersions),
+  annotations: many(annotations),
+  events: many(events),
+  tags: many(requestTags),
+  files: many(contextFiles),
+  decisions: many(decisions),
+}));
+
+export const artifactVersionsRelations = relations(artifactVersions, ({ one, many }) => ({
+  request: one(reviewRequests, {
+    fields: [artifactVersions.requestId],
+    references: [reviewRequests.id],
+  }),
+  anchorStates: many(anchorStates),
+}));
+
+export const annotationsRelations = relations(annotations, ({ one, many }) => ({
+  request: one(reviewRequests, {
+    fields: [annotations.requestId],
+    references: [reviewRequests.id],
+  }),
+  author: one(users, { fields: [annotations.authorUserId], references: [users.id] }),
+  states: many(anchorStates),
+}));
+
+export const anchorStatesRelations = relations(anchorStates, ({ one }) => ({
+  annotation: one(annotations, {
+    fields: [anchorStates.annotationId],
+    references: [annotations.id],
+  }),
+  version: one(artifactVersions, {
+    fields: [anchorStates.versionId],
+    references: [artifactVersions.id],
+  }),
+}));
+
+export const eventsRelations = relations(events, ({ one, many }) => ({
+  request: one(reviewRequests, {
+    fields: [events.requestId],
+    references: [reviewRequests.id],
+  }),
+  deliveries: many(webhookDeliveries),
+}));
+
+export const webhookDeliveriesRelations = relations(webhookDeliveries, ({ one }) => ({
+  endpoint: one(webhookEndpoints, {
+    fields: [webhookDeliveries.endpointId],
+    references: [webhookEndpoints.id],
   }),
 }));
 
 export const activityLogsRelations = relations(activityLogs, ({ one }) => ({
-  team: one(teams, {
-    fields: [activityLogs.teamId],
-    references: [teams.id],
+  workspace: one(workspaces, {
+    fields: [activityLogs.workspaceId],
+    references: [workspaces.id],
   }),
-  user: one(users, {
-    fields: [activityLogs.userId],
-    references: [users.id],
-  }),
+  user: one(users, { fields: [activityLogs.userId], references: [users.id] }),
 }));
+
+// ---------------------------------------------------------------------------
+// Inferred types
+// ---------------------------------------------------------------------------
 
 export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
-export type Team = typeof teams.$inferSelect;
-export type NewTeam = typeof teams.$inferInsert;
-export type TeamMember = typeof teamMembers.$inferSelect;
-export type NewTeamMember = typeof teamMembers.$inferInsert;
-export type ActivityLog = typeof activityLogs.$inferSelect;
-export type NewActivityLog = typeof activityLogs.$inferInsert;
+export type Workspace = typeof workspaces.$inferSelect;
+export type WorkspaceMember = typeof workspaceMembers.$inferSelect;
 export type Invitation = typeof invitations.$inferSelect;
-export type NewInvitation = typeof invitations.$inferInsert;
-export type TeamDataWithMembers = Team & {
-  teamMembers: (TeamMember & {
+export type ActivityLog = typeof activityLogs.$inferSelect;
+export type Project = typeof projects.$inferSelect;
+export type ApiKey = typeof apiKeys.$inferSelect;
+export type Queue = typeof queues.$inferSelect;
+export type PolicyVersion = typeof policyVersions.$inferSelect;
+export type Criterion = typeof criteria.$inferSelect;
+export type ReviewRequest = typeof reviewRequests.$inferSelect;
+export type NewReviewRequest = typeof reviewRequests.$inferInsert;
+export type ArtifactVersion = typeof artifactVersions.$inferSelect;
+export type Annotation = typeof annotations.$inferSelect;
+export type AnchorState = typeof anchorStates.$inferSelect;
+export type CriteriaVerdict = typeof criteriaVerdicts.$inferSelect;
+export type Decision = typeof decisions.$inferSelect;
+export type EventRow = typeof events.$inferSelect;
+export type WebhookEndpoint = typeof webhookEndpoints.$inferSelect;
+export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
+export type Lease = typeof leases.$inferSelect;
+
+export type WorkspaceDataWithMembers = Workspace & {
+  members: (WorkspaceMember & {
     user: Pick<User, 'id' | 'name' | 'email'>;
   })[];
 };
@@ -135,8 +708,8 @@ export enum ActivityType {
   UPDATE_PASSWORD = 'UPDATE_PASSWORD',
   DELETE_ACCOUNT = 'DELETE_ACCOUNT',
   UPDATE_ACCOUNT = 'UPDATE_ACCOUNT',
-  CREATE_TEAM = 'CREATE_TEAM',
-  REMOVE_TEAM_MEMBER = 'REMOVE_TEAM_MEMBER',
-  INVITE_TEAM_MEMBER = 'INVITE_TEAM_MEMBER',
+  CREATE_WORKSPACE = 'CREATE_WORKSPACE',
+  REMOVE_WORKSPACE_MEMBER = 'REMOVE_WORKSPACE_MEMBER',
+  INVITE_WORKSPACE_MEMBER = 'INVITE_WORKSPACE_MEMBER',
   ACCEPT_INVITATION = 'ACCEPT_INVITATION',
 }
