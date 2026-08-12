@@ -3,8 +3,13 @@ import { eq } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 import { ensureMigrated, truncateAll, db } from './harness';
 import { auth } from '@/lib/auth/auth';
-import { ensurePersonalWorkspace } from '@/lib/auth/bootstrap';
-import { user as userTable, workspaceMembers, workspaces } from '@/lib/db/schema';
+import { ensurePersonalWorkspace, assignWorkspaceOnSignup } from '@/lib/auth/bootstrap';
+import {
+  user as userTable,
+  workspaceMembers,
+  workspaces,
+  invitations,
+} from '@/lib/db/schema';
 
 /**
  * The invariant: no signup may end without a workspace. A user without one
@@ -87,5 +92,87 @@ describe('every signup lands in a workspace', () => {
     const rowsA = await membershipsFor(a);
     const rowsB = await membershipsFor(b);
     expect(rowsA[0].workspaceId).not.toBe(rowsB[0].workspaceId);
+  });
+
+  describe('invitations', () => {
+    async function invite(email: string, role: 'reviewer' | 'operator' = 'reviewer') {
+      const inviterEmail = freshEmail();
+      await auth.api.signUpEmail({
+        body: { email: inviterEmail, password: 'correct-horse-battery', name: 'Inviter' },
+      });
+      const [inviterMembership] = await membershipsFor(inviterEmail);
+      await db.insert(invitations).values({
+        workspaceId: inviterMembership.workspaceId,
+        email,
+        role,
+        invitedBy: (await db.query.user.findFirst({
+          where: eq(userTable.email, inviterEmail),
+        }))!.id,
+      });
+      return inviterMembership.workspaceId;
+    }
+
+    it('an invited signup joins the inviting workspace and gets NO personal one', async () => {
+      const email = freshEmail();
+      const workspaceId = await invite(email, 'reviewer');
+
+      await auth.api.signUpEmail({
+        body: { email, password: 'correct-horse-battery', name: 'Invited' },
+      });
+
+      const rows = await membershipsFor(email);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].workspaceId).toBe(workspaceId);
+      expect(rows[0].role).toBe('reviewer');
+    });
+
+    it('marks the invitation accepted', async () => {
+      const email = freshEmail();
+      const workspaceId = await invite(email);
+      await auth.api.signUpEmail({
+        body: { email, password: 'correct-horse-battery', name: 'Invited' },
+      });
+      const [row] = await db
+        .select()
+        .from(invitations)
+        .where(eq(invitations.workspaceId, workspaceId));
+      expect(row.status).toBe('accepted');
+    });
+
+    it('an invited person can accept by signing in with Google — no action involved', async () => {
+      // The sign-up server action is email-only, so an invite could never be
+      // accepted through a social callback before this lived in the hook.
+      const email = freshEmail();
+      const workspaceId = await invite(email, 'operator');
+      const ctx = await auth.$context;
+      await ctx.internalAdapter.createUser({ email, name: 'Google Invitee', emailVerified: true });
+
+      const rows = await membershipsFor(email);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].workspaceId).toBe(workspaceId);
+      expect(rows[0].role).toBe('operator');
+    });
+
+    it('joins every pending invitation, not just the first', async () => {
+      const email = freshEmail();
+      const a = await invite(email, 'reviewer');
+      const b = await invite(email, 'operator');
+      await auth.api.signUpEmail({
+        body: { email, password: 'correct-horse-battery', name: 'Popular' },
+      });
+      const rows = await membershipsFor(email);
+      expect(rows.map((r) => r.workspaceId).sort()).toEqual([a, b].sort());
+    });
+
+    it('an accepted invitation is not re-joined on a repeated call', async () => {
+      const email = freshEmail();
+      await invite(email);
+      await auth.api.signUpEmail({
+        body: { email, password: 'correct-horse-battery', name: 'Invited' },
+      });
+      const u = await db.query.user.findFirst({ where: eq(userTable.email, email) });
+      await assignWorkspaceOnSignup(u!.id, email);
+      expect(await membershipsFor(email)).toHaveLength(1);
+    });
   });
 });

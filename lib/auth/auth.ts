@@ -38,15 +38,15 @@ export const auth = betterAuth({
   databaseHooks: {
     user: {
       create: {
-        // The invariant: a user without a workspace bounces off every
-        // workspace-scoped page, so no signup may end without one. Enforcing
-        // it here rather than in the sign-up action covers every path that
-        // can ever create a user — email, Google, and anything added later —
-        // including a social callback that redirects somewhere other than
-        // /welcome. Idempotent, so the later paths are free to call it again.
+        // Every path that can create a user runs through here — email,
+        // Google, and anything added later — including a social callback that
+        // redirects somewhere other than /welcome. Invitation-aware: an
+        // invited address joins the inviting workspace and gets no stray
+        // personal one, while everyone else still ends up with exactly one.
+        // Idempotent, so the later paths are free to call it again.
         after: async (created) => {
-          const { ensurePersonalWorkspace } = await import('./bootstrap');
-          await ensurePersonalWorkspace(created.id, created.email);
+          const { assignWorkspaceOnSignup } = await import('./bootstrap');
+          await assignWorkspaceOnSignup(created.id, created.email);
         },
       },
     },

@@ -14,7 +14,7 @@ import {
   user as userTable,
 } from '@/lib/db/schema';
 import { auth } from '@/lib/auth/auth';
-import { ensurePersonalWorkspace, slugify } from '@/lib/auth/bootstrap';
+import { normalizeEmail } from '@/lib/auth/bootstrap';
 import { redirect } from 'next/navigation';
 import { getUser, getUserWithWorkspace } from '@/lib/db/queries';
 import {
@@ -100,6 +100,23 @@ const signUpSchema = z.object({
 export const signUp = validatedAction(signUpSchema, async (data) => {
   const { email, password, inviteId } = data;
 
+  if (inviteId) {
+    const [invitation] = await db
+      .select()
+      .from(invitations)
+      .where(
+        and(
+          eq(invitations.id, parseInt(inviteId)),
+          eq(invitations.email, normalizeEmail(email)),
+          eq(invitations.status, 'pending')
+        )
+      )
+      .limit(1);
+    if (!invitation) {
+      return { error: 'Invalid or expired invitation.', email, password };
+    }
+  }
+
   let createdUserId: string;
   try {
     const res = await auth.api.signUpEmail({
@@ -118,45 +135,13 @@ export const signUp = validatedAction(signUpSchema, async (data) => {
     throw error;
   }
 
-  let workspaceId: number;
-  let userRole: 'admin' | 'operator' | 'reviewer' | 'adjudicator' = 'admin';
-
-  if (inviteId) {
-    const [invitation] = await db
-      .select()
-      .from(invitations)
-      .where(
-        and(
-          eq(invitations.id, parseInt(inviteId)),
-          eq(invitations.email, email),
-          eq(invitations.status, 'pending')
-        )
-      )
-      .limit(1);
-
-    if (!invitation) {
-      return { error: 'Invalid or expired invitation.', email, password };
-    }
-
-    workspaceId = invitation.workspaceId;
-    userRole = invitation.role;
-
-    await db
-      .update(invitations)
-      .set({ status: 'accepted' })
-      .where(eq(invitations.id, invitation.id));
-
-    await logActivity(workspaceId, createdUserId, ActivityType.ACCEPT_INVITATION);
-    await db.insert(workspaceMembers).values({
-      userId: createdUserId,
-      workspaceId,
-      role: userRole,
-    });
-  } else {
-    // Same bootstrap social sign-in uses, so both paths agree on what a new
-    // account gets: one workspace, owned as admin.
-    workspaceId = await ensurePersonalWorkspace(createdUserId, email);
-  }
+  // Workspace assignment already happened in the user-create hook, which is
+  // invitation-aware and runs for every signup path. All that is left here is
+  // reporting: which workspace did this person actually land in?
+  const membership = await db.query.workspaceMembers.findFirst({
+    where: eq(workspaceMembers.userId, createdUserId),
+  });
+  const workspaceId = membership!.workspaceId;
 
   await logActivity(workspaceId, createdUserId, ActivityType.SIGN_UP);
 
