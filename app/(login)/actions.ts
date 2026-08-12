@@ -14,6 +14,7 @@ import {
   user as userTable,
 } from '@/lib/db/schema';
 import { auth } from '@/lib/auth/auth';
+import { ensurePersonalWorkspace, slugify } from '@/lib/auth/bootstrap';
 import { redirect } from 'next/navigation';
 import { getUser, getUserWithWorkspace } from '@/lib/db/queries';
 import {
@@ -38,14 +39,19 @@ async function logActivity(
   });
 }
 
-function slugify(input: string): string {
-  const base = input
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48);
-  const suffix = Math.random().toString(36).slice(2, 8);
-  return base ? `${base}-${suffix}` : suffix;
+/**
+ * Surface what BetterAuth actually said. Swallowing every APIError into
+ * "please try again" told a user whose email already existed to retry
+ * something that could never succeed. Keep a generic fallback for the cases
+ * where there is no safe message to show.
+ */
+function authErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof APIError) {
+    const body = error.body as { message?: string; code?: string } | undefined;
+    const message = body?.message ?? error.message;
+    if (typeof message === 'string' && message.trim().length > 0) return message;
+  }
+  return fallback;
 }
 
 const signInSchema = z.object({
@@ -64,7 +70,7 @@ export const signIn = validatedAction(signInSchema, async (data) => {
   } catch (error) {
     if (error instanceof APIError) {
       return {
-        error: 'Invalid email or password. Please try again.',
+        error: authErrorMessage(error, 'Invalid email or password. Please try again.'),
         email,
         password,
       };
@@ -103,7 +109,11 @@ export const signUp = validatedAction(signUpSchema, async (data) => {
     createdUserId = res.user.id;
   } catch (error) {
     if (error instanceof APIError) {
-      return { error: 'Failed to create user. Please try again.', email, password };
+      return {
+        error: authErrorMessage(error, 'Could not create the account. Please try again.'),
+        email,
+        password,
+      };
     }
     throw error;
   }
@@ -137,30 +147,18 @@ export const signUp = validatedAction(signUpSchema, async (data) => {
       .where(eq(invitations.id, invitation.id));
 
     await logActivity(workspaceId, createdUserId, ActivityType.ACCEPT_INVITATION);
-  } else {
-    const name = `${email.split('@')[0]}'s workspace`;
-    const [createdWorkspace] = await db
-      .insert(workspaces)
-      .values({ name, slug: slugify(name) })
-      .returning();
-
-    if (!createdWorkspace) {
-      return { error: 'Failed to create workspace. Please try again.', email, password };
-    }
-
-    workspaceId = createdWorkspace.id;
-    userRole = 'admin';
-    await logActivity(workspaceId, createdUserId, ActivityType.CREATE_WORKSPACE);
-  }
-
-  await Promise.all([
-    db.insert(workspaceMembers).values({
+    await db.insert(workspaceMembers).values({
       userId: createdUserId,
       workspaceId,
       role: userRole,
-    }),
-    logActivity(workspaceId, createdUserId, ActivityType.SIGN_UP),
-  ]);
+    });
+  } else {
+    // Same bootstrap social sign-in uses, so both paths agree on what a new
+    // account gets: one workspace, owned as admin.
+    workspaceId = await ensurePersonalWorkspace(createdUserId, email);
+  }
+
+  await logActivity(workspaceId, createdUserId, ActivityType.SIGN_UP);
 
   redirect('/dashboard');
 });
