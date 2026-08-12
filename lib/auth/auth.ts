@@ -35,6 +35,22 @@ export const auth = betterAuth({
         },
       }
     : undefined,
+  databaseHooks: {
+    user: {
+      create: {
+        // The invariant: a user without a workspace bounces off every
+        // workspace-scoped page, so no signup may end without one. Enforcing
+        // it here rather than in the sign-up action covers every path that
+        // can ever create a user — email, Google, and anything added later —
+        // including a social callback that redirects somewhere other than
+        // /welcome. Idempotent, so the later paths are free to call it again.
+        after: async (created) => {
+          const { ensurePersonalWorkspace } = await import('./bootstrap');
+          await ensurePersonalWorkspace(created.id, created.email);
+        },
+      },
+    },
+  },
   account: {
     accountLinking: {
       enabled: true,
