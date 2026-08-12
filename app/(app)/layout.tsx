@@ -46,8 +46,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const slugs = [...new Set(queueRows.map((q) => q.slug))];
   const shellData: ShellData = {
-    workspace: { name: workspace?.name ?? 'Workspace', href: '/dashboard' },
-    project: { name: project?.name ?? 'Project', href: '/dashboard' },
+    workspace: { name: workspace?.name ?? 'Workspace', href: '/admin' },
+    project: {
+      name: project?.name ?? 'Project',
+      href: project ? `/admin/projects/${project.slug}` : '/admin',
+    },
     queues: slugs.map((slug) => ({
       label: slug,
       value: `/queue?queue=${encodeURIComponent(slug)}`,

@@ -171,7 +171,7 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
     { icon: ListChecks, title: 'Reviewer queue', href: '/queue' },
     { icon: History, title: 'Request timeline', href: '/requests' },
     { icon: Activity, title: 'Convergence dashboard — coming soon', href: null as string | null },
-    { icon: Settings, title: 'Workspace, project & queue pages', href: '/dashboard' },
+    { icon: Settings, title: 'Workspace, project & queue pages', href: '/admin' },
   ];
 
   const searchParams = useSearchParams();

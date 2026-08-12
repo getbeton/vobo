@@ -242,6 +242,10 @@ export const queues = pgTable(
     slug: varchar('slug', { length: 64 }).notNull(),
     environment: queueEnvironmentEnum('environment').notNull().default('production'),
     openForReview: boolean('open_for_review').notNull().default(true),
+    // Explicit per-queue overrides of workspace policy defaults. Only the keys
+    // an operator has actually set live here; everything else inherits. The
+    // resolved snapshot is what gets frozen into a policy_versions row.
+    policyOverrides: jsonb('policy_overrides').notNull().default({}),
     // Set after the first policy version is created (circular FK avoided by
     // keeping this nullable and pointing at policy_versions.id).
     activePolicyVersionId: uuid('active_policy_version_id'),
