@@ -11,7 +11,8 @@
     "test": "vitest run",
     "worker": "node scripts/migrate.mjs && npx tsx worker/index.ts",
     "mcp": "npx tsx mcp/server.ts",
-    "boot": "node scripts/migrate.mjs && next start"
+    "boot": "node scripts/migrate.mjs && next start",
+    "db:seed:demo": "npx tsx lib/db/seed-demo.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1108.0",
