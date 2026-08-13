@@ -12,7 +12,8 @@ import {
   policyVersions,
   contextFiles,
 } from '@/lib/db/schema';
-import { workspaceOfRequest, can } from '@/lib/core/authz';
+import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
+import { NoAccess } from '@/components/shell/NoAccess';
 import { parsePolicyConfig } from '@/lib/core/policy';
 import { ReviewWorkspace } from '@/components/review/ReviewWorkspace';
 
@@ -27,8 +28,8 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
     where: eq(reviewRequests.id, id),
   });
   if (!request) notFound();
-  const wsId = await workspaceOfRequest(request.id);
-  await can.review(user.id, wsId);
+  const wsId = await workspaceOfRequestOrNull(request.id);
+  if (wsId === null || !(await canReview(user.id, wsId))) return <NoAccess />;
 
   const version = await db.query.artifactVersions.findFirst({
     where: and(

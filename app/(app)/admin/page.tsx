@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { and, eq, gte, inArray } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
-import { getUser } from '@/lib/db/queries';
+import { getUser, currentMembership } from '@/lib/db/queries';
 import {
   workspaces,
   workspaceMembers,
@@ -52,9 +52,7 @@ function initials(name: string, email: string) {
 export default async function WorkspacePage() {
   const me = await getUser();
   if (!me) redirect('/sign-in');
-  const membership = await db.query.workspaceMembers.findFirst({
-    where: eq(workspaceMembers.userId, me.id),
-  });
+  const membership = await currentMembership(me.id);
   if (!membership) redirect('/sign-in');
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, membership.workspaceId),

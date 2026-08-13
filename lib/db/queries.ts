@@ -1,4 +1,4 @@
-import { desc, eq } from 'drizzle-orm';
+import { asc, desc, eq } from 'drizzle-orm';
 import { headers } from 'next/headers';
 import { db } from './drizzle';
 import { activityLogs, workspaceMembers, user as userTable } from './schema';
@@ -79,4 +79,23 @@ export async function getMembership(userId: string) {
   return db.query.workspaceMembers.findFirst({
     where: eq(workspaceMembers.userId, userId),
   });
+}
+
+/**
+ * The workspace a page should show for this user. `findFirst` with no ordering
+ * returns whichever row Postgres feels like, so someone in two workspaces could
+ * land in a different one on every request. Oldest membership wins: the
+ * workspace you were in first is the one you think of as yours.
+ *
+ * This is a stopgap for the real answer, a workspace switcher in the shell
+ * (the prototype has the control; it is wired to a single option today).
+ */
+export async function currentMembership(userId: string) {
+  const [row] = await db
+    .select()
+    .from(workspaceMembers)
+    .where(eq(workspaceMembers.userId, userId))
+    .orderBy(asc(workspaceMembers.joinedAt), asc(workspaceMembers.id))
+    .limit(1);
+  return row ?? null;
 }

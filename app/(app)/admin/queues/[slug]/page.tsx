@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
-import { getUser } from '@/lib/db/queries';
+import { getUser, currentMembership } from '@/lib/db/queries';
 import {
   workspaces,
   workspaceMembers,
@@ -36,9 +36,7 @@ export default async function QueueAdminPage({
   const sp = await searchParams;
   const me = await getUser();
   if (!me) redirect('/sign-in');
-  const membership = await db.query.workspaceMembers.findFirst({
-    where: eq(workspaceMembers.userId, me.id),
-  });
+  const membership = await currentMembership(me.id);
   if (!membership) redirect('/sign-in');
   const isOperator = membership.role === 'operator' || membership.role === 'admin';
 

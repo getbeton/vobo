@@ -2,7 +2,7 @@ import { redirect } from 'next/navigation';
 import { desc, eq, inArray } from 'drizzle-orm';
 import { Suspense } from 'react';
 import { db } from '@/lib/db/drizzle';
-import { getUser } from '@/lib/db/queries';
+import { getUser, currentMembership } from '@/lib/db/queries';
 import {
   workspaceMembers,
   workspaces,
@@ -17,9 +17,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const user = await getUser();
   if (!user) redirect('/sign-in');
 
-  const membership = await db.query.workspaceMembers.findFirst({
-    where: eq(workspaceMembers.userId, user.id),
-  });
+  const membership = await currentMembership(user.id);
   if (!membership) redirect('/sign-in');
 
   const workspace = await db.query.workspaces.findFirst({

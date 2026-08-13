@@ -11,7 +11,8 @@ import {
   criteriaVerdicts,
   policyVersions,
 } from '@/lib/db/schema';
-import { workspaceOfRequest, can } from '@/lib/core/authz';
+import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
+import { NoAccess } from '@/components/shell/NoAccess';
 import { parsePolicyConfig } from '@/lib/core/policy';
 import { VersionCompare } from '@/components/review/VersionCompare';
 
@@ -31,8 +32,8 @@ export default async function ComparePage({
 
   const request = await db.query.reviewRequests.findFirst({ where: eq(reviewRequests.id, id) });
   if (!request) notFound();
-  const wsId = await workspaceOfRequest(request.id);
-  await can.review(user.id, wsId);
+  const wsId = await workspaceOfRequestOrNull(request.id);
+  if (wsId === null || !(await canReview(user.id, wsId))) return <NoAccess />;
 
   const versions = await db
     .select()

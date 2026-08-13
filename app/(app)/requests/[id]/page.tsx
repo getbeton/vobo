@@ -4,7 +4,8 @@ import { asc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
 import { getUser } from '@/lib/db/queries';
 import { reviewRequests, artifactVersions } from '@/lib/db/schema';
-import { workspaceOfRequest, can } from '@/lib/core/authz';
+import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
+import { NoAccess } from '@/components/shell/NoAccess';
 import { getVerifiedChain } from '@/lib/core/eventlog';
 
 export const dynamic = 'force-dynamic';
@@ -20,8 +21,8 @@ export default async function TimelinePage({ params }: { params: Promise<{ id: s
   if (!user) redirect('/sign-in');
   const request = await db.query.reviewRequests.findFirst({ where: eq(reviewRequests.id, id) });
   if (!request) notFound();
-  const wsId = await workspaceOfRequest(request.id);
-  await can.review(user.id, wsId);
+  const wsId = await workspaceOfRequestOrNull(request.id);
+  if (wsId === null || !(await canReview(user.id, wsId))) return <NoAccess />;
 
   const { rows, verification } = await getVerifiedChain(db, request.id);
   const versions = await db

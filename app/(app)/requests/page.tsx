@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { redirect } from 'next/navigation';
 import { desc, eq } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
-import { getUser } from '@/lib/db/queries';
+import { getUser, currentMembership } from '@/lib/db/queries';
 import { workspaceMembers, projects, reviewRequests } from '@/lib/db/schema';
 
 export const dynamic = 'force-dynamic';
@@ -18,9 +18,7 @@ const statusChip: Record<string, { bg: string; fg: string }> = {
 export default async function RequestsPage() {
   const user = await getUser();
   if (!user) redirect('/sign-in');
-  const membership = await db.query.workspaceMembers.findFirst({
-    where: eq(workspaceMembers.userId, user.id),
-  });
+  const membership = await currentMembership(user.id);
   if (!membership) redirect('/sign-in');
   const project = await db.query.projects.findFirst({
     where: eq(projects.workspaceId, membership.workspaceId),

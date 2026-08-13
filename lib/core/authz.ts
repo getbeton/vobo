@@ -65,3 +65,27 @@ export const can = {
   /** Admins manage members and workspace settings. */
   administer: (userId: string, workspaceId: number) => requireRole(userId, workspaceId, []),
 };
+
+/**
+ * Non-throwing variant for pages. An authorization refusal is an expected
+ * outcome of a shared URL, not an exception — a page that lets ApiProblem
+ * escape renders as "Application error: a server-side exception has occurred",
+ * which tells the person nothing and looks like a fault in the product.
+ */
+export async function canReview(userId: string, workspaceId: number): Promise<boolean> {
+  try {
+    await can.review(userId, workspaceId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Resolve a request's workspace without throwing when it does not exist. */
+export async function workspaceOfRequestOrNull(requestId: string): Promise<number | null> {
+  try {
+    return await workspaceOfRequest(requestId);
+  } catch {
+    return null;
+  }
+}
