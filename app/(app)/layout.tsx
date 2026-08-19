@@ -1,16 +1,9 @@
 import { redirect } from 'next/navigation';
-import { desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray } from 'drizzle-orm';
 import { Suspense } from 'react';
 import { db } from '@/lib/db/drizzle';
 import { getUser, currentMembership } from '@/lib/db/queries';
-import {
-  workspaceMembers,
-  workspaces,
-  projects,
-  queues,
-  events,
-  reviewRequests,
-} from '@/lib/db/schema';
+import { workspaces, projects, queues, events, reviewRequests } from '@/lib/db/schema';
 import { AppShell, ShellData } from '@/components/shell/AppShell';
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -23,42 +16,56 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, membership.workspaceId),
   });
-  const project = await db.query.projects.findFirst({
-    where: eq(projects.workspaceId, membership.workspaceId),
-  });
-  const queueRows = project
-    ? await db.select().from(queues).where(eq(queues.projectId, project.id))
+
+  // VOBO-206: the layout used to fetch ONE project with an unordered
+  // `findFirst`, so a project menu had no data to render and the crumb could
+  // point at a different project than the body. Load them all, ordered.
+  const projectRows = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.workspaceId, membership.workspaceId))
+    .orderBy(asc(projects.createdAt), asc(projects.id));
+  const projectIds = projectRows.map((p) => p.id);
+
+  const queueRows = projectIds.length
+    ? await db
+        .select()
+        .from(queues)
+        .where(inArray(queues.projectId, projectIds))
+        .orderBy(asc(queues.createdAt), asc(queues.id))
     : [];
 
-  // Operator alert feed: recent load-bearing events across the project.
+  // Operator alert feed: recent load-bearing events across THIS workspace. The
+  // join had no project predicate at all, so another tenant's escalation would
+  // have appeared in the bell.
   const alertTypes = ['decision.escalated', 'correction.persisting', 'sla.timeout'];
-  const alertRows = project
+  const alertRows = projectIds.length
     ? await db
         .select({ event: events, request: reviewRequests })
         .from(events)
         .innerJoin(reviewRequests, eq(reviewRequests.id, events.requestId))
-        .where(inArray(events.type, alertTypes))
+        .where(
+          and(
+            inArray(events.type, alertTypes),
+            inArray(reviewRequests.projectId, projectIds)
+          )
+        )
         .orderBy(desc(events.id))
         .limit(15)
     : [];
 
-  const slugs = [...new Set(queueRows.map((q) => q.slug))];
   const shellData: ShellData = {
     workspace: { name: workspace?.name ?? 'Workspace', href: '/admin' },
-    project: {
-      name: project?.name ?? 'Project',
-      href: project ? `/admin/projects/${project.slug}` : '/admin',
-    },
-    queues: slugs.map((slug) => ({
-      label: slug,
-      value: `/queue?queue=${encodeURIComponent(slug)}`,
-      href: `/queue?queue=${encodeURIComponent(slug)}`,
-      selected: true,
+    projects: projectRows.map((p) => ({
+      slug: p.slug,
+      name: p.name,
+      href: `/admin/projects/${p.slug}`,
+      // Distinct slugs, in the order the resolver would see them. A queue slug
+      // exists in both environments; the crumb switches slug, not environment.
+      queueSlugs: [
+        ...new Set(queueRows.filter((q) => q.projectId === p.id).map((q) => q.slug)),
+      ],
     })),
-    environments: [
-      { label: 'production', value: '/queue?env=production', selected: true },
-      { label: 'test', value: '/queue?env=test' },
-    ],
     alerts: alertRows.map(({ event, request }) => ({
       id: String(event.id),
       text:
