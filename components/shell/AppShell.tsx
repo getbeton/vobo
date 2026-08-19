@@ -17,6 +17,7 @@ import {
   environmentTarget,
   optionsWithSelection,
   selectedLabel,
+  selectProject,
   type ProjectOption,
 } from '@/lib/shell/crumbs';
 
@@ -214,8 +215,7 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
     env: searchParams.get('env'),
   });
 
-  const selectedProject =
-    data.projects.find((p) => p.slug === selection.projectSlug) ?? data.projects[0] ?? null;
+  const selectedProject = selectProject(data.projects, selection);
 
   const projectOptions = optionsWithSelection(
     data.projects.map((p) => ({

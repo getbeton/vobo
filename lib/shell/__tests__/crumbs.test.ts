@@ -6,6 +6,7 @@ import {
   environmentTarget,
   optionsWithSelection,
   selectedLabel,
+  selectProject,
 } from '../crumbs';
 
 const PICO = {
@@ -98,5 +99,34 @@ describe('crumb targets', () => {
   it('encodes slugs that need it', () => {
     const odd = { slug: 'a b', name: 'A B', queueSlugs: ['c&d'] };
     expect(projectTarget(current, odd)).toBe('/queue?project=a+b&queue=c%26d&env=production');
+  });
+});
+
+describe('project selection follows the resolver', () => {
+  // resolveQueue searches the whole workspace for a slug. If the crumb fell to
+  // the first project instead, the breadcrumb would name one project while the
+  // body rendered a queue from another.
+  const projects = [ACME, PICO];
+
+  it('picks the project that owns the queue slug when no project is given', () => {
+    const sel = readSelection({ queue: 'pico-cold-email' });
+    expect(selectProject(projects, sel)?.slug).toBe('pico');
+  });
+
+  it('lets an explicit project win over the slug owner', () => {
+    const sel = readSelection({ project: 'acme', queue: 'pico-cold-email' });
+    expect(selectProject(projects, sel)?.slug).toBe('acme');
+  });
+
+  it('falls to the first project when nothing is given', () => {
+    expect(selectProject(projects, readSelection({}))?.slug).toBe('acme');
+  });
+
+  it('falls to the first project when the slug is in no project', () => {
+    expect(selectProject(projects, readSelection({ queue: 'ghost' }))?.slug).toBe('acme');
+  });
+
+  it('returns null when the workspace has no projects', () => {
+    expect(selectProject([], readSelection({ queue: 'x' }))).toBeNull();
   });
 });

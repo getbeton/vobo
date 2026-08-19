@@ -80,6 +80,28 @@ export function environmentTarget(
   return href({ ...current, environment });
 }
 
+/**
+ * The project the breadcrumb must show.
+ *
+ * `?project=` wins. Without it, the project that owns the queue slug wins —
+ * because that is what `resolveQueue` picks for the body. Falling to the first
+ * project here would put the crumb on one project while the body renders a
+ * queue from another, which is the mismatch this whole change exists to remove.
+ */
+export function selectProject<T extends ProjectOption>(
+  projects: T[],
+  selection: CrumbSelection
+): T | null {
+  if (selection.projectSlug) {
+    return projects.find((p) => p.slug === selection.projectSlug) ?? projects[0] ?? null;
+  }
+  if (selection.queueSlug) {
+    const owner = projects.find((p) => p.queueSlugs.includes(selection.queueSlug!));
+    if (owner) return owner;
+  }
+  return projects[0] ?? null;
+}
+
 export interface CrumbOptionData {
   label: string;
   value: string;
