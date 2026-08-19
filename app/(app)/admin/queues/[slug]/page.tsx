@@ -172,7 +172,9 @@ export default async function QueueAdminPage({
                   </div>
                   <div style={{ display: 'flex' }}>
                     <Link
-                      href={`/queue?queue=${encodeURIComponent(q.slug)}&env=${q.environment}`}
+                      href={`/queue?project=${encodeURIComponent(
+                        project.slug
+                      )}&queue=${encodeURIComponent(q.slug)}&env=${q.environment}`}
                       style={{
                         fontSize: 13,
                         fontWeight: 500,

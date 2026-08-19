@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useTransition } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { claimAction, releaseAction } from '@/lib/actions/review';
 
@@ -78,14 +79,127 @@ function versionBadge(round: number, persisting: number) {
   );
 }
 
+/**
+ * Why a queue could not be shown. VOBO-204: one flag said "no queue" for three
+ * different situations, and the copy asserted the pipeline registers queues
+ * over the API. It does not — `createReview` answers 404 for an unknown slug
+ * and there is no queue-create endpoint. Each case now says what is true.
+ */
+export interface QueueMiss {
+  kind: 'no_projects' | 'no_queues' | 'queue_not_found' | 'project_not_found';
+  /** The slug the reader asked for, when they asked for one. */
+  askedFor?: string | null;
+  /** The project the reader asked for, when they asked for one. */
+  askedProject?: string | null;
+  /** The project that was selected, for the admin link. */
+  projectSlug?: string | null;
+  projectName?: string | null;
+  /** Every queue in the workspace, so the reader can go to a real one. */
+  available: Array<{ projectSlug: string; projectName: string; queueSlug: string }>;
+  environment: 'production' | 'test';
+}
+
+function QueueMissScreen({ miss }: { miss: QueueMiss }) {
+  const links = miss.available.map((q) => (
+    <Link
+      key={`${q.projectSlug}/${q.queueSlug}`}
+      href={`/queue?project=${encodeURIComponent(q.projectSlug)}&queue=${encodeURIComponent(
+        q.queueSlug
+      )}&env=${miss.environment}`}
+      style={{
+        fontSize: 13,
+        border: '1px solid var(--border)',
+        borderRadius: 8,
+        padding: '6px 10px',
+        textDecoration: 'none',
+        color: 'var(--slate-700)',
+        background: '#fff',
+      }}
+    >
+      {q.projectName} · {q.queueSlug}
+    </Link>
+  ));
+
+  let title: string;
+  let body: React.ReactNode;
+
+  if (miss.kind === 'project_not_found') {
+    title = 'That project is not in this workspace';
+    body = (
+      <>
+        No project has the slug <code>{miss.askedProject}</code>.
+      </>
+    );
+  } else if (miss.kind === 'queue_not_found') {
+    title = 'That queue is not in this workspace';
+    body = (
+      <>
+        No queue has the slug <code>{miss.askedFor}</code> in the{' '}
+        <strong>{miss.environment}</strong> environment.
+      </>
+    );
+  } else if (miss.kind === 'no_projects') {
+    title = 'This workspace has no projects';
+    body = <>Create a project before you review anything.</>;
+  } else {
+    title = `${miss.projectName ?? 'This project'} has no queues`;
+    body = (
+      <>
+        An operator or the seed script creates a queue. The pipeline does not: a review request for
+        an unknown queue gets <code>404 queue_not_found</code>.
+      </>
+    );
+  }
+
+  return (
+    <div style={{ padding: '28px 32px' }}>
+      <div
+        style={{
+          border: '1px dashed var(--border)',
+          borderRadius: 12,
+          padding: 48,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 10,
+          background: '#fff',
+          maxWidth: 880,
+          margin: '0 auto',
+        }}
+      >
+        <span style={{ fontWeight: 600, fontSize: 15 }}>{title}</span>
+        <span style={{ fontSize: 13, color: 'var(--slate-500)', textAlign: 'center' }}>{body}</span>
+        {links.length > 0 && (
+          <>
+            <span style={{ fontSize: 12, color: 'var(--slate-400)', marginTop: 6 }}>
+              These queues exist:
+            </span>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'center' }}>
+              {links}
+            </div>
+          </>
+        )}
+        {miss.projectSlug && (
+          <Link
+            href={`/admin/projects/${miss.projectSlug}`}
+            style={{ fontSize: 12, color: 'var(--blue-700)', marginTop: 6 }}
+          >
+            Open the project page
+          </Link>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function QueueScreen({
   rows,
   nextUp,
-  noQueue,
+  miss,
 }: {
   rows: QueueRowData[];
   nextUp: QueueRowData | null;
-  noQueue: boolean;
+  miss: QueueMiss | null;
 }) {
   const router = useRouter();
   const [focusIdx, setFocusIdx] = useState(0);
@@ -139,31 +253,7 @@ export function QueueScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, focusIdx, nextUp]);
 
-  if (noQueue) {
-    return (
-      <div style={{ padding: '28px 32px' }}>
-        <div
-          style={{
-            border: '1px dashed var(--border)',
-            borderRadius: 12,
-            padding: 48,
-            display: 'flex',
-            flexDirection: 'column',
-            alignItems: 'center',
-            gap: 10,
-            background: '#fff',
-            maxWidth: 880,
-            margin: '0 auto',
-          }}
-        >
-          <span style={{ fontWeight: 600, fontSize: 15 }}>No queues here yet</span>
-          <span style={{ fontSize: 13, color: 'var(--slate-500)' }}>
-            The pipeline hasn’t registered a queue in this project — queues appear via the API.
-          </span>
-        </div>
-      </div>
-    );
-  }
+  if (miss) return <QueueMissScreen miss={miss} />;
 
   return (
     <div style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '28px 32px' }}>
