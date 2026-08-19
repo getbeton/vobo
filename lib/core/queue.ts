@@ -1,5 +1,5 @@
 import { and, asc, eq, inArray, lt, sql } from 'drizzle-orm';
-import { reviewRequests, leases, queues } from '@/lib/db/schema';
+import { reviewRequests, leases, queues, projects } from '@/lib/db/schema';
 import { appendEvent, Db, DbOrTx } from './eventlog';
 import { ApiProblem, getPolicyForRequest } from './requests';
 
@@ -8,6 +8,160 @@ import { ApiProblem, getPolicyForRequest } from './requests';
  * never configure sorting): sticky regenerations pin to the top for their
  * reviewer, then the policy's rule order (sla → priority → fifo in MVP).
  */
+
+export type QueueEnvironment = 'production' | 'test';
+
+export interface ResolveQueueInput {
+  workspaceId: number;
+  projectSlug?: string | null;
+  queueSlug?: string | null;
+  environment?: QueueEnvironment;
+}
+
+export interface ResolveQueueResult {
+  /** The project the queue was found in, or null when nothing resolved. */
+  project: typeof projects.$inferSelect | null;
+  queue: typeof queues.$inferSelect | null;
+  /** Every project in the workspace, deterministically ordered. */
+  projects: Array<typeof projects.$inferSelect>;
+  /** Distinct queue rows of the selected project, in the asked-for environment. */
+  projectQueues: Array<typeof queues.$inferSelect>;
+  /** Every queue slug in the workspace, for a truthful not-found message. */
+  workspaceQueues: Array<{ projectSlug: string; projectName: string; queueSlug: string }>;
+  /** True when the same slug exists in more than one project. */
+  ambiguous: boolean;
+  /** The projects that carry an ambiguous slug, in resolution order. */
+  candidateProjects: Array<typeof projects.$inferSelect>;
+  reason: 'project_not_found' | 'queue_not_found' | 'no_projects' | 'no_queues' | null;
+}
+
+/**
+ * The single place that turns (workspace, project?, queue?, environment) into
+ * one queue row.
+ *
+ * VOBO-204: the app shell, the queue page and the requests page each ran their
+ * own `db.query.projects.findFirst({ where: eq(projects.workspaceId, …) })`.
+ * That call has no `orderBy`, so which project won was whatever Postgres
+ * returned, and a `?queue=` slug living in any other project resolved to
+ * nothing — the page then claimed the pipeline had registered no queue. One
+ * resolver, ordered by (createdAt, id), removes the copies and the ordering
+ * hole together.
+ *
+ * Every query is scoped by workspace id, so no cross-tenant row is reachable
+ * even with an exact slug.
+ */
+export async function resolveQueue(
+  db: DbOrTx,
+  input: ResolveQueueInput
+): Promise<ResolveQueueResult> {
+  const environment: QueueEnvironment = input.environment === 'test' ? 'test' : 'production';
+
+  const projectRows = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.workspaceId, input.workspaceId))
+    .orderBy(asc(projects.createdAt), asc(projects.id));
+
+  const empty = {
+    project: null,
+    queue: null,
+    projects: projectRows,
+    projectQueues: [],
+    workspaceQueues: [],
+    ambiguous: false,
+    candidateProjects: [],
+  };
+
+  if (projectRows.length === 0) {
+    return { ...empty, reason: 'no_projects' as const };
+  }
+
+  const projectIds = projectRows.map((p) => p.id);
+  const queueRows = await db
+    .select()
+    .from(queues)
+    .where(and(inArray(queues.projectId, projectIds), eq(queues.environment, environment)))
+    .orderBy(asc(queues.createdAt), asc(queues.id));
+
+  const byId = new Map(projectRows.map((p) => [p.id, p]));
+  const workspaceQueues = queueRows.map((q) => ({
+    projectSlug: byId.get(q.projectId)!.slug,
+    projectName: byId.get(q.projectId)!.name,
+    queueSlug: q.slug,
+  }));
+
+  // An explicit project always wins. A project slug that does not exist is
+  // reported, never silently swapped for the first project.
+  if (input.projectSlug) {
+    const project = projectRows.find((p) => p.slug === input.projectSlug);
+    if (!project) {
+      return { ...empty, workspaceQueues, reason: 'project_not_found' as const };
+    }
+    const projectQueues = queueRows.filter((q) => q.projectId === project.id);
+    const queue = input.queueSlug
+      ? projectQueues.find((q) => q.slug === input.queueSlug)
+      : projectQueues[0];
+    return {
+      project,
+      queue: queue ?? null,
+      projects: projectRows,
+      projectQueues,
+      workspaceQueues,
+      ambiguous: false,
+      candidateProjects: [],
+      reason: queue ? null : projectQueues.length === 0 ? 'no_queues' : 'queue_not_found',
+    };
+  }
+
+  // No project given: search the slug across the whole workspace.
+  if (input.queueSlug) {
+    const hits = queueRows.filter((q) => q.slug === input.queueSlug);
+    if (hits.length === 0) {
+      const project = projectRows[0];
+      return {
+        project,
+        queue: null,
+        projects: projectRows,
+        projectQueues: queueRows.filter((q) => q.projectId === project.id),
+        workspaceQueues,
+        ambiguous: false,
+        candidateProjects: [],
+        reason: 'queue_not_found' as const,
+      };
+    }
+    const queue = hits[0];
+    const project = byId.get(queue.projectId)!;
+    const candidateProjects =
+      hits.length > 1
+        ? projectRows.filter((p) => hits.some((h) => h.projectId === p.id))
+        : [];
+    return {
+      project,
+      queue,
+      projects: projectRows,
+      projectQueues: queueRows.filter((q) => q.projectId === project.id),
+      workspaceQueues,
+      ambiguous: hits.length > 1,
+      candidateProjects,
+      reason: null,
+    };
+  }
+
+  // Nothing given: the first queue of the first project that has one.
+  const project =
+    projectRows.find((p) => queueRows.some((q) => q.projectId === p.id)) ?? projectRows[0];
+  const projectQueues = queueRows.filter((q) => q.projectId === project.id);
+  return {
+    project,
+    queue: projectQueues[0] ?? null,
+    projects: projectRows,
+    projectQueues,
+    workspaceQueues,
+    ambiguous: false,
+    candidateProjects: [],
+    reason: projectQueues.length === 0 ? 'no_queues' : null,
+  };
+}
 
 export interface QueueRow {
   request: typeof reviewRequests.$inferSelect;

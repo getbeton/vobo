@@ -118,3 +118,41 @@ export async function createFixtures(policyOverrides: Partial<PolicyConfig> = {}
 }
 
 export { db, client };
+
+/**
+ * A second project with its own queues, for the multi-project resolution tests.
+ * The production defect was that only the first project of a workspace was ever
+ * reachable, so every test of the resolver needs at least two.
+ */
+export async function addProject(
+  workspaceId: number,
+  userId: string,
+  slug: string,
+  queueSlugs: string[]
+) {
+  const [project] = await db
+    .insert(projects)
+    .values({ workspaceId, name: slug, slug })
+    .returning();
+  const made: Record<string, { production: string; test: string }> = {};
+  for (const queueSlug of queueSlugs) {
+    const pair: Record<string, string> = {};
+    for (const environment of ['production', 'test'] as const) {
+      const [queue] = await db
+        .insert(queues)
+        .values({ projectId: project.id, name: queueSlug, slug: queueSlug, environment })
+        .returning();
+      const [pv] = await db
+        .insert(policyVersions)
+        .values({ queueId: queue.id, version: 1, config: DEFAULT_POLICY, createdBy: userId })
+        .returning();
+      await db
+        .update(queues)
+        .set({ activePolicyVersionId: pv.id })
+        .where(sql`${queues.id} = ${queue.id}`);
+      pair[environment] = queue.id;
+    }
+    made[queueSlug] = pair as { production: string; test: string };
+  }
+  return { project, queues: made };
+}

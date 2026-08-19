@@ -2,43 +2,47 @@ import { redirect } from 'next/navigation';
 import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
 import { getUser, currentMembership } from '@/lib/db/queries';
-import {
-  workspaceMembers,
-  projects,
-  queues,
-  anchorStates,
-  annotations,
-  artifactVersions,
-} from '@/lib/db/schema';
-import { rankedQueue } from '@/lib/core/queue';
-import { QueueScreen, QueueRowData } from '@/components/queue/QueueScreen';
+import { anchorStates, annotations, artifactVersions } from '@/lib/db/schema';
+import { rankedQueue, resolveQueue } from '@/lib/core/queue';
+import { QueueScreen, QueueRowData, QueueMiss } from '@/components/queue/QueueScreen';
 
 export const dynamic = 'force-dynamic';
 
 export default async function QueuePage({
   searchParams,
 }: {
-  searchParams: Promise<{ queue?: string; env?: string }>;
+  searchParams: Promise<{ project?: string; queue?: string; env?: string }>;
 }) {
   const params = await searchParams;
   const user = await getUser();
   if (!user) redirect('/sign-in');
   const membership = await currentMembership(user.id);
   if (!membership) redirect('/sign-in');
-  const project = await db.query.projects.findFirst({
-    where: eq(projects.workspaceId, membership.workspaceId),
-  });
-  if (!project) return <QueueScreen rows={[]} nextUp={null} noQueue />;
 
   const environment = (params.env === 'test' ? 'test' : 'production') as 'test' | 'production';
-  const allQueues = await db
-    .select()
-    .from(queues)
-    .where(and(eq(queues.projectId, project.id), eq(queues.environment, environment)));
-  const queue = params.queue
-    ? allQueues.find((q) => q.slug === params.queue)
-    : allQueues[0];
-  if (!queue) return <QueueScreen rows={[]} nextUp={null} noQueue />;
+
+  // VOBO-204: one resolver for the whole workspace. The page no longer picks a
+  // project of its own, so a slug that lives in the second project resolves.
+  const resolved = await resolveQueue(db, {
+    workspaceId: membership.workspaceId,
+    projectSlug: params.project ?? null,
+    queueSlug: params.queue ?? null,
+    environment,
+  });
+
+  if (!resolved.queue) {
+    const miss: QueueMiss = {
+      kind: resolved.reason ?? 'no_queues',
+      askedFor: params.queue ?? null,
+      askedProject: params.project ?? null,
+      projectSlug: resolved.project?.slug ?? null,
+      projectName: resolved.project?.name ?? null,
+      available: resolved.workspaceQueues,
+      environment,
+    };
+    return <QueueScreen rows={[]} nextUp={null} miss={miss} />;
+  }
+  const queue = resolved.queue;
 
   const ranked = await rankedQueue(db, queue.id, user.id);
 
@@ -90,5 +94,5 @@ export default async function QueuePage({
   const nextUp =
     rows.find((r) => r.status === 'open' || (r.lease?.mine ?? false)) ?? null;
 
-  return <QueueScreen rows={rows} nextUp={nextUp} noQueue={false} />;
+  return <QueueScreen rows={rows} nextUp={nextUp} miss={null} />;
 }
