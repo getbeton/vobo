@@ -1,6 +1,6 @@
 'use client';
 
-import { ReactNode, useEffect, useState } from 'react';
+import { ReactNode, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import {
@@ -10,6 +10,15 @@ import {
   Activity,
   Settings,
 } from 'lucide-react';
+import {
+  readSelection,
+  projectTarget,
+  queueTarget,
+  environmentTarget,
+  optionsWithSelection,
+  selectedLabel,
+  type ProjectOption,
+} from '@/lib/shell/crumbs';
 
 /**
  * App chrome, ported verbatim from design/vobo-review-station.dc.html:
@@ -26,11 +35,14 @@ export interface CrumbOption {
   selected?: boolean;
 }
 
+export interface ShellProject extends ProjectOption {
+  href: string;
+}
+
 export interface ShellData {
   workspace: { name: string; href: string };
-  project: { name: string; href: string };
-  queues: CrumbOption[];
-  environments: CrumbOption[];
+  /** Every project in the workspace, deterministically ordered. */
+  projects: ShellProject[];
   alerts: Array<{ id: string; text: string; kind: string; at: string }>;
 }
 
@@ -60,6 +72,24 @@ function CrumbMenu({
   onPick: (value: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const box = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [open]);
+
   if (options.length <= 1) {
     const only = options[0];
     return only?.href ? (
@@ -75,7 +105,7 @@ function CrumbMenu({
     );
   }
   return (
-    <span style={{ position: 'relative', display: 'inline-flex' }}>
+    <span ref={box} style={{ position: 'relative', display: 'inline-flex' }}>
       <button type="button" onClick={() => setOpen((o) => !o)} title={title} style={chip}>
         {label}
         <span style={{ fontSize: 9, color: 'var(--slate-400)' }}>▾</span>
@@ -175,11 +205,44 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
   ];
 
   const searchParams = useSearchParams();
-  const envParam = searchParams.get('env') ?? 'production';
-  const selectedQueue = data.queues.find((q) => q.selected) ?? data.queues[0];
-  const selectedEnv =
-    data.environments.find((e) => e.value.includes(`env=${envParam}`)) ??
-    data.environments.find((e) => e.selected);
+
+  // Selection comes from the URL, never from the first row. That mismatch is
+  // how the crumb could name a queue the body was not showing.
+  const selection = readSelection({
+    project: searchParams.get('project'),
+    queue: searchParams.get('queue'),
+    env: searchParams.get('env'),
+  });
+
+  const selectedProject =
+    data.projects.find((p) => p.slug === selection.projectSlug) ?? data.projects[0] ?? null;
+
+  const projectOptions = optionsWithSelection(
+    data.projects.map((p) => ({
+      label: p.name,
+      slug: p.slug,
+      value: projectTarget(selection, p),
+    })),
+    selectedProject?.slug ?? null
+  );
+
+  const queueOptions = optionsWithSelection(
+    (selectedProject?.queueSlugs ?? []).map((slug) => ({
+      label: slug,
+      slug,
+      value: queueTarget({ ...selection, projectSlug: selectedProject?.slug ?? null }, slug),
+    })),
+    selection.queueSlug
+  );
+
+  const environmentOptions = (['production', 'test'] as const).map((env) => ({
+    label: env,
+    value: environmentTarget(
+      { ...selection, projectSlug: selectedProject?.slug ?? null },
+      env
+    ),
+    selected: selection.environment === env,
+  }));
 
   return (
     <div
@@ -217,28 +280,52 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
         <CrumbMenu
           label={data.workspace.name}
           title="Workspace"
-          options={[{ label: data.workspace.name, value: 'ws', href: data.workspace.href, selected: true }]}
+          options={[
+            { label: data.workspace.name, value: 'ws', href: data.workspace.href, selected: true },
+          ]}
           onPick={() => {}}
         />
         <span style={{ color: 'var(--slate-300)' }}>/</span>
         <CrumbMenu
-          label={data.project.name}
+          label={selectedLabel(projectOptions, 'project')}
           title="Project"
-          options={[{ label: data.project.name, value: 'p', href: data.project.href, selected: true }]}
-          onPick={() => {}}
-        />
-        <span style={{ color: 'var(--slate-300)' }}>/</span>
-        <CrumbMenu
-          label={selectedQueue?.label ?? 'queue'}
-          title="Queue"
-          options={data.queues}
+          options={
+            data.projects.length === 1
+              ? [
+                  {
+                    label: data.projects[0].name,
+                    value: 'p',
+                    href: data.projects[0].href,
+                    selected: true,
+                  },
+                ]
+              : projectOptions
+          }
           onPick={(v) => router.push(v)}
         />
         <span style={{ color: 'var(--slate-300)' }}>/</span>
         <CrumbMenu
-          label={selectedEnv?.label ?? 'production'}
+          label={selectedLabel(queueOptions, 'queue')}
+          title="Queue"
+          options={
+            queueOptions.length === 1 && selectedProject
+              ? [
+                  {
+                    label: queueOptions[0].label,
+                    value: 'q',
+                    href: queueOptions[0].value,
+                    selected: true,
+                  },
+                ]
+              : queueOptions
+          }
+          onPick={(v) => router.push(v)}
+        />
+        <span style={{ color: 'var(--slate-300)' }}>/</span>
+        <CrumbMenu
+          label={selection.environment}
           title="Environment — a property of the queue"
-          options={data.environments}
+          options={environmentOptions}
           onPick={(v) => router.push(v)}
         />
 
