@@ -297,17 +297,91 @@ async function resetDemo(workspaceId: number) {
   await db.delete(invitations).where(eq(invitations.email, 'tom@betonlabs.dev'));
 }
 
+const DEMO_WORKSPACE_SLUG = 'vobo-demo';
+
+/**
+ * What the target workspace holds that this script did not put there.
+ *
+ * The seed used to take `owner`'s first membership and write into it. Pointing
+ * `POSTGRES_URL` at production was all it took to put three people who do not
+ * exist on the live workspace page — which is exactly what happened. The only
+ * guard was "has project acme already", which stops a double-seed and nothing
+ * else.
+ */
+async function foreignContent(workspaceId: number) {
+  const projectRows = await db
+    .select()
+    .from(projects)
+    .where(eq(projects.workspaceId, workspaceId));
+  const projectIds = projectRows.map((p) => p.id);
+  const requestRows = projectIds.length
+    ? (await db.select({ id: reviewRequests.id, projectId: reviewRequests.projectId }).from(reviewRequests))
+        .filter((r) => projectIds.includes(r.projectId))
+    : [];
+  const memberRows = await db
+    .select({ email: userTable.email })
+    .from(workspaceMembers)
+    .innerJoin(userTable, eq(userTable.id, workspaceMembers.userId))
+    .where(eq(workspaceMembers.workspaceId, workspaceId));
+  const demoEmails = new Set<string>(TEAM.map((m) => m.email));
+  return {
+    projects: projectRows.length,
+    requests: requestRows.length,
+    members: memberRows.filter((m) => !demoEmails.has(m.email)).length,
+  };
+}
+
+/** Find or create the workspace this script owns. */
+async function demoWorkspace(ownerId: string) {
+  const existing = await db.query.workspaces.findFirst({
+    where: eq(workspaces.slug, DEMO_WORKSPACE_SLUG),
+  });
+  const ws =
+    existing ??
+    (
+      await db
+        .insert(workspaces)
+        .values({ name: 'Vobo Demo', slug: DEMO_WORKSPACE_SLUG, policyDefaults: {} })
+        .returning()
+    )[0];
+  const has = await db.query.workspaceMembers.findFirst({
+    where: and(eq(workspaceMembers.userId, ownerId), eq(workspaceMembers.workspaceId, ws.id)),
+  });
+  if (!has) {
+    await db.insert(workspaceMembers).values({ userId: ownerId, workspaceId: ws.id, role: 'admin' });
+  }
+  return ws;
+}
+
 async function seedDemo() {
   const owner = await db.query.user.findFirst({
     where: eq(userTable.email, process.env.SEED_EMAIL || 'v@getbeton.ai'),
   });
   if (!owner) throw new Error('Run `npm run db:seed` first — no owner account found.');
 
-  const membership = await db.query.workspaceMembers.findFirst({
-    where: eq(workspaceMembers.userId, owner.id),
-  });
-  if (!membership) throw new Error('Owner has no workspace — run `npm run db:seed` first.');
-  const workspaceId = membership.workspaceId;
+  // The demo lives in its own workspace. It never borrows a live one.
+  const target = process.env.VOBO_DEMO_WORKSPACE_ID
+    ? await db.query.workspaces.findFirst({
+        where: eq(workspaces.id, Number(process.env.VOBO_DEMO_WORKSPACE_ID)),
+      })
+    : await demoWorkspace(owner.id);
+  if (!target) throw new Error('VOBO_DEMO_WORKSPACE_ID names a workspace that does not exist.');
+  const workspaceId = target.id;
+
+  if (target.slug !== DEMO_WORKSPACE_SLUG) {
+    const found = await foreignContent(workspaceId);
+    const live = found.requests > 0 || found.projects > 0 || found.members > 0;
+    if (live && !process.env.VOBO_DEMO_FORCE) {
+      console.error(
+        `Refusing to seed the demo into workspace ${workspaceId} ("${target.name}").\n` +
+          `  It already holds ${found.projects} project(s), ${found.requests} request(s) and ` +
+          `${found.members} member(s) this script did not create.\n` +
+          `  The demo belongs in its own workspace (slug "${DEMO_WORKSPACE_SLUG}").\n` +
+          `  Set VOBO_DEMO_FORCE=1 to write into this workspace anyway.`
+      );
+      process.exit(1);
+    }
+  }
 
   const already = await db.query.projects.findFirst({
     where: and(eq(projects.workspaceId, workspaceId), eq(projects.slug, 'acme')),
@@ -358,10 +432,25 @@ async function seedDemo() {
     .values({ workspaceId, name: 'Acme Pipelines', slug: 'acme' })
     .returning();
 
-  const pico = await db.query.projects.findFirst({
-    where: and(eq(projects.workspaceId, workspaceId), eq(projects.slug, 'pico')),
+  // The demo owns its own PICO project. It used to reach for the base seed's,
+  // which is what tied the demo to the live workspace in the first place.
+  const pico =
+    (await db.query.projects.findFirst({
+      where: and(eq(projects.workspaceId, workspaceId), eq(projects.slug, 'pico')),
+    })) ??
+    (
+      await db
+        .insert(projects)
+        .values({ workspaceId, name: 'PICO Outbound', slug: 'pico' })
+        .returning()
+    )[0];
+
+  const hasColdEmail = await db.query.queues.findFirst({
+    where: and(eq(queues.projectId, pico.id), eq(queues.slug, 'pico-cold-email')),
   });
-  if (!pico) throw new Error('PICO project missing — run `npm run db:seed` first.');
+  if (!hasColdEmail) {
+    await makeQueue(pico.id, 'pico-cold-email', 'pico-cold-email', EMAIL_RUBRIC, owner.id);
+  }
 
   // Second queue in PICO (so the project page lists more than one), and a
   // queue in Acme with a policy OVERRIDE so the queue page shows both states.

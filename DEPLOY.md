@@ -68,6 +68,21 @@ Migrations need no step of their own: `npm run boot` replays the drizzle journal
 (`scripts/migrate.mjs`, production deps only) before `next start`, so every deploy is
 schema-correct.
 
+## Never point the demo seed at production
+
+`npm run db:seed:demo` writes fixture users, projects, queues and requests. It now creates its own
+workspace (slug `vobo-demo`) and refuses a workspace that holds work it did not create, but the
+refusal is a guard, not a licence:
+
+```bash
+POSTGRES_URL="$VOBO_PROD_PG" npm run db:seed:demo   # do not
+```
+
+On 2026-08-19 the earlier version of that command was found to have put three people who do not
+exist — Mara Kim, Jonas Størm, Ana López — and a pending invite on the production workspace page.
+`scripts/purge-demo-members.mjs` removes those memberships; it keeps the user rows, because they
+author decisions and annotations on requests that stay.
+
 ## Smoke check
 
 ```bash
