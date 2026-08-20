@@ -7,7 +7,7 @@ import { reviewRequests } from '@/lib/db/schema';
 import { getUser } from '@/lib/db/queries';
 import { ApiProblem } from '@/lib/core/requests';
 import { can, workspaceOfRequest } from '@/lib/core/authz';
-import { archiveRequests, claim, rankedQueue, release } from '@/lib/core/queue';
+import { archiveRequests, claim, rankedQueue, release, unarchiveRequests } from '@/lib/core/queue';
 import {
   addComment,
   editComment,
@@ -125,6 +125,23 @@ export const archiveRequestsAction = wrap(
         throw new ApiProblem(403, 'cross_workspace', 'The selection spans more than one workspace');
     }
     const res = await archiveRequests(db, { requestIds, userId: user.id, reason });
+    revalidatePath('/queue');
+    revalidatePath('/requests');
+    return res;
+  }
+);
+
+export const unarchiveRequestsAction = wrap(
+  async (requestIds: string[], reason?: string) => {
+    if (requestIds.length === 0)
+      throw new ApiProblem(422, 'nothing_selected', 'Select at least one request');
+    // Same two guards as archive: operator role, and one workspace per batch.
+    const { user, wsId } = await guardOperator(requestIds[0]);
+    for (const id of requestIds.slice(1)) {
+      if ((await workspaceOfRequest(id)) !== wsId)
+        throw new ApiProblem(403, 'cross_workspace', 'The selection spans more than one workspace');
+    }
+    const res = await unarchiveRequests(db, { requestIds, userId: user.id, reason });
     revalidatePath('/queue');
     revalidatePath('/requests');
     return res;
