@@ -70,6 +70,56 @@ export async function addComment(db: Db, input: AddCommentInput) {
   });
 }
 
+/**
+ * Edit the body of a comment that has not been resolved.
+ *
+ * A correction is the payload that ships with a rejection, so a wrong one is
+ * worse than no comment at all — and until now the only exits were "resolve"
+ * and "leave it there".
+ *
+ * The anchor is NOT touched. The range, quote, prefix and suffix are what the
+ * re-anchoring matcher works from; moving them would silently change which
+ * span a persisting correction refers to. Only `body` changes, and the previous
+ * body goes into the event, so the chain still holds what was originally said.
+ */
+export async function editComment(
+  db: Db,
+  input: { requestId: string; annotationId: string; userId: string; body: string }
+) {
+  const body = input.body.trim();
+  if (!body) throw new ApiProblem(422, 'empty_body', 'A comment needs a body');
+  return db.transaction(async (tx) => {
+    const ann = await tx.query.annotations.findFirst({
+      where: and(
+        eq(annotations.id, input.annotationId),
+        eq(annotations.requestId, input.requestId)
+      ),
+    });
+    if (!ann) throw new ApiProblem(404, 'annotation_not_found', 'Comment not found');
+    if (ann.resolvedAt)
+      throw new ApiProblem(409, 'already_resolved', 'A resolved comment cannot be edited');
+    if (ann.retiredAt)
+      throw new ApiProblem(409, 'retired', 'A retired comment cannot be edited');
+    if (ann.authorUserId !== input.userId)
+      throw new ApiProblem(403, 'not_the_author', 'Only the author can edit a comment');
+    if (ann.body === body) return ann;
+
+    const [updated] = await tx
+      .update(annotations)
+      .set({ body })
+      .where(eq(annotations.id, ann.id))
+      .returning();
+
+    await appendEvent(tx, input.requestId, 'annotation.edited', {
+      annotation_id: ann.id,
+      previous_body: ann.body,
+      body,
+      by: input.userId,
+    });
+    return updated;
+  });
+}
+
 /** Resolve unblocks approve; it does NOT ship (design decision, prototype). */
 export async function resolveComment(db: Db, requestId: string, annotationId: string, userId: string) {
   await db
