@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { reviewRequests, leases, queues, projects } from '@/lib/db/schema';
 import { appendEvent, Db, DbOrTx } from './eventlog';
 import { ApiProblem, getPolicyForRequest } from './requests';
@@ -176,7 +176,11 @@ export async function rankedQueue(db: DbOrTx, queueId: string, userId: string): 
     .from(reviewRequests)
     .leftJoin(leases, eq(leases.requestId, reviewRequests.id))
     .where(
-      and(eq(reviewRequests.queueId, queueId), inArray(reviewRequests.status, ['open', 'claimed']))
+      and(
+        eq(reviewRequests.queueId, queueId),
+        inArray(reviewRequests.status, ['open', 'claimed']),
+        isNull(reviewRequests.archivedAt)
+      )
     )
     .orderBy(
       sql`case when ${reviewRequests.stickyReviewerId} = ${userId} then 0 else 1 end`,
@@ -208,6 +212,58 @@ export async function rankedQueue(db: DbOrTx, queueId: string, userId: string): 
  * Atomic claim: locks the request row; exactly one concurrent claimer wins.
  * Losing claimers get a 409 race error (the queue UI auto-advances focus).
  */
+/**
+ * Archive requests in bulk — take them off the queue without a verdict.
+ *
+ * 425 open requests landed in one batch, and some accounts get killed outright.
+ * The only way to clear a row used to be to review it.
+ *
+ * Archive is a soft state and never a delete: versions, decisions and events
+ * reference the request, and the chain is the product. Each request gets its
+ * own `request.archived` event on its own chain, so an archive is as auditable
+ * as a verdict. An already-archived request is skipped, so a repeated call is
+ * safe.
+ */
+export async function archiveRequests(
+  db: Db,
+  input: { requestIds: string[]; userId: string; reason?: string }
+): Promise<{ archived: string[]; skipped: string[] }> {
+  if (input.requestIds.length === 0) return { archived: [], skipped: [] };
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .select()
+      .from(reviewRequests)
+      .where(inArray(reviewRequests.id, input.requestIds));
+
+    const archived: string[] = [];
+    const skipped: string[] = [];
+    const at = new Date();
+    for (const request of rows) {
+      if (request.archivedAt) {
+        skipped.push(request.id);
+        continue;
+      }
+      await tx
+        .update(reviewRequests)
+        .set({ archivedAt: at, archivedBy: input.userId, updatedAt: at })
+        .where(eq(reviewRequests.id, request.id));
+      await appendEvent(tx, request.id, 'request.archived', {
+        by: input.userId,
+        status_at_archive: request.status,
+        round: request.round,
+        batch_size: input.requestIds.length,
+        reason: input.reason ?? null,
+      });
+      archived.push(request.id);
+    }
+    // An id that names nothing, or a request in another workspace the caller
+    // could not see, is reported rather than silently dropped.
+    const found = new Set(rows.map((r) => r.id));
+    for (const id of input.requestIds) if (!found.has(id)) skipped.push(id);
+    return { archived, skipped };
+  });
+}
+
 export async function claim(db: Db, requestId: string, userId: string) {
   return db.transaction(async (tx) => {
     const [request] = await tx

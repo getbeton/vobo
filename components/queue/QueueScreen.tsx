@@ -3,7 +3,7 @@
 import { useEffect, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { claimAction, releaseAction } from '@/lib/actions/review';
+import { archiveRequestsAction, claimAction, releaseAction } from '@/lib/actions/review';
 
 /**
  * Reviewer Queue — verbatim port of the prototype's queue screen:
@@ -11,6 +11,10 @@ import { claimAction, releaseAction } from '@/lib/actions/review';
  * version badge ("v2 returned — N persisting", loud) / sticky chip / lease
  * note (dimmed, never hidden), "Queue clear" empty state.
  * Keys: J/K focus · Enter/N claim · R release own lease.
+ *
+ * Operators and admins also get selection and bulk archive (VOBO-224). A
+ * reviewer sees no checkbox: archive takes work off the board without a
+ * verdict, so it belongs to whoever owns the queue.
  */
 
 export interface QueueRowData {
@@ -196,10 +200,13 @@ export function QueueScreen({
   rows,
   nextUp,
   miss,
+  canArchive = false,
 }: {
   rows: QueueRowData[];
   nextUp: QueueRowData | null;
   miss: QueueMiss | null;
+  /** Operator or admin. Reviewers never see the selection controls. */
+  canArchive?: boolean;
 }) {
   const router = useRouter();
   const [focusIdx, setFocusIdx] = useState(0);
@@ -207,6 +214,41 @@ export function QueueScreen({
   const [tipNext, setTipNext] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [, startTransition] = useTransition();
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Anchor for shift-click ranges, same behaviour as Apollo's list.
+  const [anchor, setAnchor] = useState<number | null>(null);
+  const [confirmArchive, setConfirmArchive] = useState(false);
+
+  const allSelected = rows.length > 0 && selected.size === rows.length;
+
+  const toggleRow = (index: number, shiftKey: boolean) => {
+    const next = new Set(selected);
+    if (shiftKey && anchor !== null) {
+      const [from, to] = anchor < index ? [anchor, index] : [index, anchor];
+      // A shift-click extends the selection; it never clears what is already on.
+      for (let i = from; i <= to; i++) next.add(rows[i].id);
+    } else {
+      const id = rows[index].id;
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      setAnchor(index);
+    }
+    setSelected(next);
+  };
+
+  const archiveSelected = () => {
+    const ids = rows.filter((r) => selected.has(r.id)).map((r) => r.id);
+    if (ids.length === 0) return;
+    setError(null);
+    startTransition(async () => {
+      const res = await archiveRequestsAction(ids);
+      if (!res.ok) setError(res.error);
+      setConfirmArchive(false);
+      setSelected(new Set());
+      setAnchor(null);
+      router.refresh();
+    });
+  };
 
   const openOrClaim = (row: QueueRowData) => {
     setError(null);
@@ -439,6 +481,78 @@ export function QueueScreen({
           </>
         )}
 
+        {canArchive && rows.length > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '8px 16px',
+              border: '1px solid var(--border)',
+              background: selected.size > 0 ? 'var(--blue-50)' : '#fff',
+              borderRadius: 10,
+              fontSize: 13,
+            }}
+          >
+            <input
+              type="checkbox"
+              aria-label="Select every request on this page"
+              checked={allSelected}
+              ref={(el) => {
+                if (el) el.indeterminate = selected.size > 0 && !allSelected;
+              }}
+              onChange={() => {
+                setSelected(allSelected ? new Set() : new Set(rows.map((r) => r.id)));
+                setAnchor(null);
+              }}
+              style={{ cursor: 'pointer', width: 15, height: 15 }}
+            />
+            {selected.size === 0 ? (
+              <span style={{ color: 'var(--slate-500)' }}>
+                Select requests to archive them. Shift-click picks a range.
+              </span>
+            ) : (
+              <>
+                <span style={{ fontWeight: 500 }}>
+                  {selected.size} selected of {rows.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelected(new Set());
+                    setAnchor(null);
+                  }}
+                  style={{
+                    background: 'none',
+                    border: 'none',
+                    color: 'var(--slate-500)',
+                    fontSize: 12,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Clear
+                </button>
+                <div style={{ flex: 1 }} />
+                <button
+                  type="button"
+                  onClick={() => setConfirmArchive(true)}
+                  className="ds-btn ds-btn--sm"
+                  style={{
+                    border: '1px solid var(--border)',
+                    background: '#fff',
+                    borderRadius: 8,
+                    padding: '6px 12px',
+                    cursor: 'pointer',
+                    fontWeight: 500,
+                  }}
+                >
+                  Archive {selected.size}
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {rows.map((row, i) => {
             const heldByOther = row.lease && !row.lease.mine;
@@ -454,13 +568,27 @@ export function QueueScreen({
                   alignItems: 'center',
                   gap: 10,
                   border: i === focusIdx ? '1px solid var(--blue-400)' : '1px solid var(--border)',
-                  background: '#fff',
+                  background: selected.has(row.id) ? 'var(--blue-50)' : '#fff',
                   borderRadius: 10,
                   padding: '12px 16px',
                   cursor: 'pointer',
                   opacity: heldByOther ? 0.55 : 1,
                 }}
               >
+                {canArchive && (
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${row.title}`}
+                    checked={selected.has(row.id)}
+                    onClick={(e) => {
+                      // The row itself opens the request; a checkbox must not.
+                      e.stopPropagation();
+                      toggleRow(i, e.shiftKey);
+                    }}
+                    onChange={() => {}}
+                    style={{ cursor: 'pointer', width: 15, height: 15, flex: 'none' }}
+                  />
+                )}
                 <span style={slaBadge(row.slaDueAt).style}>{slaBadge(row.slaDueAt).text}</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: 1, minWidth: 0 }}>
                   <span
@@ -501,6 +629,69 @@ export function QueueScreen({
             );
           })}
         </div>
+
+        {confirmArchive && (
+          <div
+            onClick={() => setConfirmArchive(false)}
+            style={{
+              position: 'fixed',
+              inset: 0,
+              background: 'rgba(0,0,0,.45)',
+              zIndex: 90,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{
+                background: '#fff',
+                borderRadius: 12,
+                boxShadow: 'var(--shadow-lg)',
+                padding: 22,
+                width: 460,
+                maxWidth: '92vw',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 12,
+              }}
+            >
+              <span style={{ fontWeight: 600, fontSize: 15 }}>
+                Archive {selected.size} request{selected.size > 1 ? 's' : ''}?
+              </span>
+              <span style={{ fontSize: 13, color: 'var(--slate-600)', lineHeight: 1.55 }}>
+                They leave this queue and the pipeline pull without a verdict. Each one records a
+                signed <code>request.archived</code> event with your name, so the chain still tells
+                the whole story. Nothing is deleted.
+              </span>
+              <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+                <button
+                  type="button"
+                  onClick={() => setConfirmArchive(false)}
+                  style={{
+                    border: '1px solid var(--border)',
+                    background: '#fff',
+                    borderRadius: 8,
+                    padding: '8px 14px',
+                    fontSize: 13,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={archiveSelected}
+                  className="ds-btn ds-btn--default"
+                  style={{ padding: '8px 16px', fontSize: 13 }}
+                >
+                  Archive
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {rows.length === 0 && (
           <div

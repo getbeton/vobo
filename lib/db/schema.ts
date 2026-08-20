@@ -321,6 +321,12 @@ export const reviewRequests = pgTable(
       .references(() => policyVersions.id),
     acceptedVersionId: uuid('accepted_version_id'),
     acceptedHash: varchar('accepted_hash', { length: 64 }),
+    // Archive is a soft state, deliberately NOT a status value: `status` is the
+    // review state and the four-state pull contract reads it. An archived
+    // request keeps whatever status it had and drops out of the queue and the
+    // pull. Nothing is ever hard-deleted — versions and events reference it.
+    archivedAt: timestamp('archived_at'),
+    archivedBy: text('archived_by').references(() => user.id),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },

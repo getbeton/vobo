@@ -19,6 +19,10 @@ export default async function QueuePage({
   const membership = await currentMembership(user.id);
   if (!membership) redirect('/sign-in');
 
+  // Archive removes work from the board without a verdict, so it sits with
+  // whoever owns the queue, not with every reviewer.
+  const canArchive = membership.role === 'operator' || membership.role === 'admin';
+
   const environment = (params.env === 'test' ? 'test' : 'production') as 'test' | 'production';
 
   // VOBO-204: one resolver for the whole workspace. The page no longer picks a
@@ -40,7 +44,7 @@ export default async function QueuePage({
       available: resolved.workspaceQueues,
       environment,
     };
-    return <QueueScreen rows={[]} nextUp={null} miss={miss} />;
+    return <QueueScreen rows={[]} nextUp={null} miss={miss} canArchive={canArchive} />;
   }
   const queue = resolved.queue;
 
@@ -94,5 +98,5 @@ export default async function QueuePage({
   const nextUp =
     rows.find((r) => r.status === 'open' || (r.lease?.mine ?? false)) ?? null;
 
-  return <QueueScreen rows={rows} nextUp={nextUp} miss={null} />;
+  return <QueueScreen rows={rows} nextUp={nextUp} miss={null} canArchive={canArchive} />;
 }

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { and, eq, gt, inArray, max, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, max, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
 import { reviewRequests, queues, events } from '@/lib/db/schema';
 import { authenticateApiKey, problemResponse } from '@/lib/core/apiauth';
@@ -77,7 +77,13 @@ export async function GET(req: Request) {
     const awaiting = url.searchParams.get('awaiting_version') === 'true';
     const changedSince = url.searchParams.get('changed_since');
 
-    const conditions = [eq(reviewRequests.projectId, principal.projectId)] as any[];
+    // An archived request is off the board: it never reaches a consumer, and a
+    // pipeline waiting on a verdict must not keep waiting on one that will
+    // never come.
+    const conditions = [
+      eq(reviewRequests.projectId, principal.projectId),
+      isNull(reviewRequests.archivedAt),
+    ] as any[];
     if (queueSlug) {
       const queue = await db.query.queues.findFirst({
         where: and(
