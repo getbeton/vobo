@@ -1,6 +1,6 @@
 # Vobo
 
-VOBO Oversees Bullshit Output
+Human <ins>Review</ins> for AI ~~Slop~~ Output
 
 No matter what your AI does – text, image, sounds or video – Vobo helps you review its products before slop goes live.
 
@@ -18,7 +18,7 @@ _The name comes from *visto bueno* (V°B°) — the Latin-American sign-off “s
 - **Data in and data out.** HTTP, MCP, and webhooks. You POST an artifact. You get a signed decision back.
 - **Hotkeys.** The station is built for the keyboard. `⌘↵` ships a verdict.
 - **Access control.** Admin and reviewer roles on every plan.
-- **Text and image now.** Sound and video are on the roadmap.
+- **Text now, image WIP.** Sound and video are on the roadmap.
 - **Retrievable traces.** Every decision is on a hash chain. You can pull the full record.
 
 ## The loop
@@ -45,9 +45,11 @@ Free is 1 queue and 1 000 reviews a month. Paid is $0.10 per human review.
 
 The LLM judge is on the roadmap. It will be free on any plan when you bring your own key. Paid will also let you use our tokens, charged per review.
 
-Open-core self-host is capped at 20 queues. If you need more than 20, write to [v@vobo.dev](mailto:v@vobo.dev) for an enterprise licence.
-
 Setup is in the [docs](https://vobo.dev/docs/quickstart).
+
+### Enterprise
+
+Open-core self-host is capped at 20 queues. If you need more than 20, write to [v@vobo.dev](mailto:v@vobo.dev) for an enterprise licence.
 
 ### Run it locally
 
@@ -113,3 +115,26 @@ Do not invent UI. The prototype in `design/` is the spec.
 ## License
 
 [Apache License 2.0](./LICENSE)
+
+## OSS tooling
+
+These projects run the station. Thank you.
+
+| Project | In Vobo | Links |
+|---|---|---|
+| [Next.js](https://nextjs.org) | The app | [repo](https://github.com/vercel/next.js) |
+| [React](https://react.dev) | UI | [repo](https://github.com/facebook/react) |
+| [Drizzle](https://orm.drizzle.team) | Schema and queries | [repo](https://github.com/drizzle-team/drizzle-orm) |
+| [Better Auth](https://www.better-auth.com) | Sessions and magic links | [repo](https://github.com/better-auth/better-auth) |
+| [MCP TypeScript SDK](https://modelcontextprotocol.io) | The MCP server | [repo](https://github.com/modelcontextprotocol/typescript-sdk) |
+| [Zod](https://zod.dev) | Request and event shapes | [repo](https://github.com/colinhacks/zod) |
+| [Tailwind CSS](https://tailwindcss.com) | Layout | [repo](https://github.com/tailwindlabs/tailwindcss) |
+| [postgres.js](https://github.com/porsager/postgres) | Postgres client | [repo](https://github.com/porsager/postgres) |
+| [pg-boss](https://github.com/timgit/pg-boss) | Jobs: webhooks, leases, SLA | [repo](https://github.com/timgit/pg-boss) |
+| [Radix UI](https://www.radix-ui.com) | Accessible primitives | [repo](https://github.com/radix-ui/primitives) |
+| [Lucide](https://lucide.dev) | Icons | [repo](https://github.com/lucide-icons/lucide) |
+| [SWR](https://swr.vercel.app) | Client data | [repo](https://github.com/vercel/swr) |
+| [Vitest](https://vitest.dev) | Tests | [repo](https://github.com/vitest-dev/vitest) |
+| [approx-string-match](https://www.npmjs.com/package/approx-string-match) | Re-anchoring after a rewrite | [repo](https://github.com/robertknight/approx-string-match-js) |
+
+VOBO Oversees Bullshit Output
