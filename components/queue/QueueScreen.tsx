@@ -350,6 +350,19 @@ export function QueueScreen({
               </div>
             )}
           </span>
+          {canArchive && (
+            <Link
+              href={archivedHref}
+              style={{
+                marginLeft: 'auto',
+                fontSize: 12,
+                color: 'var(--blue-700)',
+                textDecoration: 'none',
+              }}
+            >
+              Archived
+            </Link>
+          )}
         </div>
 
         {error && (
@@ -727,6 +740,14 @@ export function QueueScreen({
             <span style={{ fontSize: 13, color: 'var(--slate-500)' }}>
               Nothing awaiting review in this queue · switch queues in the breadcrumb
             </span>
+            {canArchive && (
+              <Link
+                href={archivedHref}
+                style={{ fontSize: 12, color: 'var(--blue-700)', marginTop: 6 }}
+              >
+                Archived
+              </Link>
+            )}
           </div>
         )}
       </div>
