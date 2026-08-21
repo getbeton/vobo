@@ -1,39 +1,53 @@
 # Vobo
 
-Human review station for AI pipeline output.
+VOBO Oversees Bullshit Output
 
-The name comes from *visto bueno* (V°B°) — the Latin-American sign-off “seen-good”. A pipeline submits an artifact. A person reviews it against a rubric and anchors corrections on exact spans. The station emits a signed decision event. Regenerations land on the same open review as new versions. Vobo never owns the pipeline and never regenerates the artifact.
+No matter what your AI does – text, image, sounds or video – Vobo helps you review its products before slop goes live.
 
-[vobo.dev](https://vobo.dev/?utm_source=github&utm_medium=readme&utm_campaign=repo) · [Docs](https://vobo.dev/docs) · [X](https://x.com/voboreview) · [LinkedIn](https://linkedin.com/company/voboreview)
+Each Vobo queue receives input and output of your model and lets your reviewers check it against policy. All decisions are stored in a hashed chain of evidence and can be POSTed wherever you want.
 
-## What it does
+We don't replace your eval tools. We make human review convenient, so you don't footgun yourself.
 
-- **Hold point.** Output does not ship until a human accepts it.
-- **Anchored corrections.** Comments stick to a span, a cell, or a region. They survive rewrites.
-- **The loop is the object.** Versions stack on one review. Prior findings re-classify as resolved, persisting, or orphaned.
-- **Signed events.** Every state change appends to a hash chain. Acceptance seals the content hash, so what shipped is what was approved.
-- **Policy on the queue.** Ranking, round budget, and advancement live on the queue. Reviewers only judge.
-- **Three ways in, one contract.** HTTP API, MCP, and webhooks. A terminal agent pulls; it keeps no local state.
+_The name comes from *visto bueno* (V°B°) — the Latin-American sign-off “seen-good”._
 
-Markdown is the modality that ships today. Code, table, and image are designed, not built.
+[vobo.dev](https://vobo.dev/?utm_source=github&utm_medium=readme&utm_campaign=repo) · [Docs](https://vobo.dev/docs/quickstart) · [X](https://x.com/voboreview) · [LinkedIn](https://linkedin.com/company/voboreview)
+
+## Features
+
+- **Anchored comments.** A comment sticks to a place in the artifact. It stays across versions until someone resolves it.
+- **Data in and data out.** HTTP, MCP, and webhooks. You POST an artifact. You get a signed decision back.
+- **Hotkeys.** The station is built for the keyboard. `⌘↵` ships a verdict.
+- **Access control.** Admin and reviewer roles on every plan.
+- **Text and image now.** Sound and video are on the roadmap.
+- **Retrievable traces.** Every decision is on a hash chain. You can pull the full record.
 
 ## The loop
 
-```
-create review ──▶ [open] ──claim──▶ [claimed] ──verdict──▶ accepted
-                                                        ├─▶ rejected  (awaiting version)
-                                                        └─▶ escalated
-       ▲                                                     │
-       └───────────────── submit version ────────────────────┘
+```mermaid
+flowchart TD
+  create["create review"] --> open["open"]
+  open -->|claim| claimed["claimed"]
+  claimed -->|verdict| accepted["accepted"]
+  claimed -->|verdict| rejected["rejected — awaiting version"]
+  claimed -->|verdict| escalated["escalated"]
+  rejected -->|submit version| open
 ```
 
-`create review` is an idempotent upsert on the caller’s request id. `submit version` never creates a request. `accepted` is terminal: do not regenerate it.
+`create review` is an idempotent upsert on the caller's request id. `submit version` never creates a request. `accepted` is terminal: do not regenerate it.
 
 ## Get started
 
-### Hosted
+### Managed cloud
 
-Use the hosted station and read the product on [vobo.dev](https://vobo.dev/?utm_source=github&utm_medium=readme&utm_campaign=repo&utm_content=get-started). The app is at [app.vobo.dev](https://app.vobo.dev). Setup is in the [docs](https://vobo.dev/docs).
+Sign up on [vobo.dev](https://vobo.dev/?utm_source=github&utm_medium=readme&utm_campaign=repo&utm_content=get-started).
+
+Free is 1 queue and 1 000 reviews a month. Paid is $0.10 per human review.
+
+The LLM judge is on the roadmap. It will be free on any plan when you bring your own key. Paid will also let you use our tokens, charged per review.
+
+Open-core self-host is capped at 20 queues. If you need more than 20, write to [v@vobo.dev](mailto:v@vobo.dev) for an enterprise licence.
+
+Setup is in the [docs](https://vobo.dev/docs/quickstart).
 
 ### Run it locally
 
@@ -67,7 +81,7 @@ Same contract on every path. Ids belong to the caller and must be deterministic.
 
 | Path | Use when |
 |---|---|
-| **HTTP** `Bearer` on `/api/v1/reviews`, `/versions`, `/corrections`, `/review`, `/cursor` | Any pipeline |
+| **HTTP** `Bearer` on `/api/v1/reviews`, `/api/v1/versions`, `/api/v1/corrections`, `/api/v1/review`, `/api/v1/cursor` | Any pipeline |
 | **MCP** `request_review`, `submit_version`, `list_reviews`, `get_review`, `get_corrections`, `get_cursor`, `set_cursor` | An agent in a terminal. Full-loop parity with HTTP |
 | **Webhooks** Standard Webhooks signing, retry 10s / 60s / 180s, then DLQ | You have a server that can receive events |
 
@@ -81,31 +95,21 @@ export VOBO_API_KEY=vobo_sk_…
 pnpm mcp
 ```
 
-`mcp/run.sh` sources credentials from `~/.claude/secrets/vobo.env` so keys never land in `.mcp.json`.
-
-## Documentation
-
-- Product and API: [vobo.dev/docs](https://vobo.dev/docs)
-- What this repo actually ships: [`docs/vobo-mvp.md`](./docs/vobo-mvp.md)
-- UI is a verbatim port of [`design/vobo-review-station.dc.html`](./design/vobo-review-station.dc.html). Read [`design/README.md`](./design/README.md) before you change a screen.
-
 ## Community
 
 | Channel | Best for |
 |---|---|
-| [vobo.dev/docs](https://vobo.dev/docs) | How to use the station |
-| [GitHub Issues](https://github.com/getbeton/vobo/issues) | Bugs and errors in this repo |
+| [vobo.dev/docs/quickstart](https://vobo.dev/docs/quickstart) | How to use the station |
+| [GitHub Issues](https://github.com/getbeton/vobo/issues/) | Bugs and errors in this repo |
 | [X](https://x.com/voboreview) | Product notes |
 | [LinkedIn](https://linkedin.com/company/voboreview) | Company notes |
 
 ## Contributing
 
-Open a pull request against `staging`. Run `pnpm test` first. The dogfood gate is `tests/integration/dogfood-e2e.test.ts` (the PICO loop over MCP against real routes and Postgres).
+Open a pull request against `staging`. Run `pnpm test` first.
 
 Do not invent UI. The prototype in `design/` is the spec.
 
 ## License
 
-This repository is under the license in [`LICENSE`](./LICENSE).
-
-VOBO Oversees Bullshit Output
+[Apache License 2.0](./LICENSE)
