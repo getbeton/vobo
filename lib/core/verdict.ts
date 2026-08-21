@@ -194,11 +194,13 @@ export async function ship(db: Db, input: ShipInput) {
       }
 
       if (input.kind === 'reject_corrections' || input.kind === 'reject_rerun') {
-        if (request.round >= policy.roundBudget)
+        // The Xth reject at the wall ships and flags. A further reject after
+        // that is refused: the loop is over. Do not drop the flag.
+        if (locked.budgetExhaustedAt)
           throw new ApiProblem(
             422,
             'round_budget_exceeded',
-            `Rejecting again would exceed the policy budget (${request.round}/${policy.roundBudget}) — escalate to the operator instead`
+            `This request already used the last policy round (${locked.round}/${policy.roundBudget})`
           );
         const out = await outgoingCorrections(tx, input.requestId);
         if (input.kind === 'reject_corrections' && out.length === 0)
@@ -309,12 +311,20 @@ export async function ship(db: Db, input: ShipInput) {
       });
     } else {
       newStatus = 'rejected';
+      const at = new Date();
+      const exhaustBudget =
+        (input.kind === 'reject_corrections' || input.kind === 'reject_rerun') &&
+        request.round >= policy.roundBudget &&
+        !locked.budgetExhaustedAt;
       await tx
         .update(reviewRequests)
         .set({
           status: 'rejected',
           stickyReviewerId: policy.stickyRegenerations ? input.userId : null,
-          updatedAt: new Date(),
+          updatedAt: at,
+          ...(exhaustBudget
+            ? { budgetExhaustedAt: at, budgetExhaustedBy: input.userId }
+            : {}),
         })
         .where(eq(reviewRequests.id, request.id));
       await appendEvent(tx, request.id, 'decision.rejected', {
@@ -322,6 +332,14 @@ export async function ship(db: Db, input: ShipInput) {
         kind: input.kind,
         corrections: outgoing,
       });
+      if (exhaustBudget) {
+        await appendEvent(tx, request.id, 'request.budget_exhausted', {
+          by: input.userId,
+          round: request.round,
+          round_budget: policy.roundBudget,
+          kind: input.kind,
+        });
+      }
       // Re-asserted persisting anchors are recorded as such.
       await tx
         .update(anchorStates)

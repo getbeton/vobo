@@ -15,7 +15,7 @@ export const policyConfigSchema = z.object({
   rankingRules: z.array(rankingRuleSchema).min(1).default(['sla', 'priority', 'fifo']),
   /** auto: verdict submit opens next item. manual: back to the queue list. */
   advancementMode: z.enum(['auto', 'manual']).default('manual'),
-  /** Rejecting past this round forces escalate (thrash guard). */
+  /** The Xth reject at this round ships and flags the request for an operator. */
   roundBudget: z.number().int().min(1).max(20).default(3),
   /** 0 = off. Schema-level support only in MVP; no adjudication UI. */
   blindN: z.number().int().min(0).max(5).default(0),

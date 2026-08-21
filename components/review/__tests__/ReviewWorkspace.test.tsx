@@ -40,6 +40,9 @@ const REQUEST = {
   source: 'Account pass.',
   policyLabel: 'policy v1',
   roundBudget: 3,
+  queueSlug: 'pico-cold-email',
+  projectSlug: 'pico',
+  budgetExhausted: false,
 };
 
 const CRITERIA: CriterionData[] = [

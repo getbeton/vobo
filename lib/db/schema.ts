@@ -327,6 +327,11 @@ export const reviewRequests = pgTable(
     // pull. Nothing is ever hard-deleted — versions and events reference it.
     archivedAt: timestamp('archived_at'),
     archivedBy: text('archived_by').references(() => user.id),
+    // Set when a reject ships at round >= policy.roundBudget. The reject still
+    // happened (status is rejected); this flag is the extra signal for the
+    // operator failing-requests page. Not a status value — same reason as archive.
+    budgetExhaustedAt: timestamp('budget_exhausted_at'),
+    budgetExhaustedBy: text('budget_exhausted_by').references(() => user.id),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },

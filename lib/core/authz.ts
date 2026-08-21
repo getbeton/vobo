@@ -81,6 +81,16 @@ export async function canReview(userId: string, workspaceId: number): Promise<bo
   }
 }
 
+/** Non-throwing variant for operator-only pages (archive, failing requests). */
+export async function canOperate(userId: string, workspaceId: number): Promise<boolean> {
+  try {
+    await can.operate(userId, workspaceId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Resolve a request's workspace without throwing when it does not exist. */
 export async function workspaceOfRequestOrNull(requestId: string): Promise<number | null> {
   try {
