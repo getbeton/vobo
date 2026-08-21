@@ -90,12 +90,17 @@ describe('ReviewWorkspace — the comment composer', () => {
     expect(marked).toBeTruthy();
     // Amber and dashed, so it does not read as a saved annotation.
     expect(marked.getAttribute('style')).toContain('dashed');
+    expect(marked.textContent).toBe('first claim');
+    expect(marked.textContent).toBe(CONTENT.slice(4, 15));
   });
 
   it('puts the cursor in the comment box', async () => {
     renderWorkspace();
+    fireEvent.click(screen.getByTitle('Hide review pane'));
+    expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
     selectInArtifact(4, 15);
     const box = await screen.findByPlaceholderText(/what’s wrong here/i);
+    expect(box).toBeTruthy();
     await waitFor(() => expect(document.activeElement).toBe(box));
   });
 
@@ -105,8 +110,16 @@ describe('ReviewWorkspace — the comment composer', () => {
     Element.prototype.scrollIntoView = spy;
     try {
       renderWorkspace();
+      fireEvent.click(screen.getByTitle('Hide review pane'));
+      expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
       selectInArtifact(4, 15);
+      const box = await screen.findByPlaceholderText(/what’s wrong here/i);
+      expect(box).toBeTruthy();
+      await waitFor(() => expect(document.activeElement).toBe(box));
       await waitFor(() => expect(spy).toHaveBeenCalled());
+      expect(spy.mock.instances).toContain(box);
+      const idx = spy.mock.instances.indexOf(box);
+      expect(spy.mock.calls[idx][0]).toEqual({ block: 'center', behavior: 'smooth' });
     } finally {
       Element.prototype.scrollIntoView = original;
     }
