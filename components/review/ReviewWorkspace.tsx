@@ -123,14 +123,22 @@ export function ReviewWorkspace({
   const [editMode, setEditMode] = useState(false);
   const [gateInfo, setGateInfo] = useState<{ blocked: boolean; reasons: string[]; interstitials: string[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [shipping, setShipping] = useState(false);
+  const [ackNeeded, setAckNeeded] = useState(false);
   const editRef = useRef<HTMLDivElement>(null);
   const artifactRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   // The key handler is bound once; the main verdict changes with the state.
   const mainVerdictRef = useRef<(() => void) | null>(null);
+  const saveCommentRef = useRef<() => void>(() => {});
   const railRef = useRef<HTMLDivElement>(null);
   // Set in the same tick so a held ⌘↵ cannot fire save twice before React commits.
   const commentBusyRef = useRef(false);
+  const shippingRef = useRef(false);
+  const composerOpenRef = useRef(false);
+  const coTextRef = useRef('');
+  composerOpenRef.current = Boolean(composer);
+  coTextRef.current = coText;
 
   const unresolved = annotations.filter((a) => !a.resolved && a.bornRound === request.round);
   const unscored = criteria.filter((c) => !c.verdict).length;
@@ -274,6 +282,7 @@ export function ReviewWorkspace({
       }
     });
   };
+  saveCommentRef.current = saveComment;
 
   const setCriterion = (criterionId: string, verdict: 'pass' | 'fail' | 'na') => {
     startTransition(async () => {
@@ -297,67 +306,115 @@ export function ReviewWorkspace({
 
   /**
    * Go to the next ranked item, or to the queue when there is none.
-   * The lease is claimed the same way a click on a queue row claims it; if
-   * another reviewer took it in between, fall back to the list rather than
-   * open something the reviewer does not hold.
+   * Mirror QueueScreen.openOrClaim: if the reviewer already holds the next
+   * row, open it — claim() refuses a live lease, including our own.
+   * not_claimable/claim_race mean someone else got it only when the lease
+   * is not ours.
    */
-  const advance = async (nextRequestId: string | null | undefined) => {
+  const advance = async (
+    nextRequestId: string | null | undefined,
+    nextLeaseMine?: boolean
+  ) => {
     if (!nextRequestId) {
       router.push('/queue');
       return;
     }
+    if (nextLeaseMine) {
+      router.push(`/review/${nextRequestId}`);
+      return;
+    }
     const claimed = await claimAction(nextRequestId);
-    router.push(claimed.ok ? `/review/${nextRequestId}` : '/queue');
+    if (claimed.ok) {
+      router.push(`/review/${nextRequestId}`);
+      return;
+    }
+    if (claimed.code === 'claim_race' || claimed.code === 'not_claimable') {
+      router.push('/queue');
+      return;
+    }
+    router.push('/queue');
   };
 
   const shipVerdict = (kind: 'approve' | 'reject_corrections' | 'reject_rerun', ack = false) => {
+    if (shippingRef.current) return;
+    shippingRef.current = true;
+    setShipping(true);
     setError(null);
     startTransition(async () => {
-      const res = await shipAction({
-        requestId: request.id,
-        kind,
-        acknowledgeInterstitials: ack,
-      });
-      if (res.ok) {
-        await advance((res.data as { nextRequestId?: string | null } | undefined)?.nextRequestId);
-      } else if (res.code === 'interstitial_unacknowledged') {
-        setError(res.error + ' — press the same button again to acknowledge.');
-      } else {
-        setError(res.error);
+      try {
+        const res = await shipAction({
+          requestId: request.id,
+          kind,
+          acknowledgeInterstitials: ack,
+        });
+        const data = res.data as
+          | { nextRequestId?: string | null; nextLeaseMine?: boolean }
+          | undefined;
+        if (res.ok) {
+          setAckNeeded(false);
+          await advance(data?.nextRequestId, data?.nextLeaseMine);
+        } else if (res.code === 'interstitial_unacknowledged') {
+          setAckNeeded(true);
+          setError(res.error + ' — press the same button again to acknowledge.');
+        } else {
+          setError(res.error);
+        }
+      } finally {
+        shippingRef.current = false;
+        setShipping(false);
       }
     });
   };
 
   const saveEdit = () => {
     const text = editRef.current?.innerText ?? '';
-    if (!text.trim()) return;
+    if (!text.trim() || shippingRef.current) return;
+    shippingRef.current = true;
+    setShipping(true);
     startTransition(async () => {
-      const res = await shipAction({
-        requestId: request.id,
-        kind: 'approve_edited',
-        editedContentMd: text,
-        acknowledgeInterstitials: true,
-      });
-      if (res.ok) {
-        await advance((res.data as { nextRequestId?: string | null } | undefined)?.nextRequestId);
-      } else {
-        setError(res.error);
-        setEditMode(false);
+      try {
+        const res = await shipAction({
+          requestId: request.id,
+          kind: 'approve_edited',
+          editedContentMd: text,
+          acknowledgeInterstitials: true,
+        });
+        const data = res.data as
+          | { nextRequestId?: string | null; nextLeaseMine?: boolean }
+          | undefined;
+        if (res.ok) {
+          setAckNeeded(false);
+          await advance(data?.nextRequestId, data?.nextLeaseMine);
+        } else {
+          setError(res.error);
+          setEditMode(false);
+        }
+      } finally {
+        shippingRef.current = false;
+        setShipping(false);
       }
     });
   };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.repeat) return;
       if ((e.target as HTMLElement)?.closest('input,textarea,[contenteditable]')) return;
       if (e.key === 'Escape') {
         setComposer(null);
         setEditing(null);
       }
-      // ⌘↵ ships the main verdict straight away. It used to open a sheet that
-      // asked the same question a second time.
+      // ⌘↵ ships the main verdict — unless the composer is open. PR #5 bound
+      // the same chord to saveComment; a collapsed selection is a no-op, so
+      // the window handler would otherwise approve and drop unsaved coText.
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
         e.preventDefault();
+        if (shippingRef.current) return;
+        if (composerOpenRef.current) {
+          saveCommentRef.current();
+          return;
+        }
+        if (coTextRef.current.trim()) return;
         mainVerdictRef.current?.();
       }
       if (e.key === 'a' || e.key === 'A') captureSelection();
@@ -373,11 +430,9 @@ export function ReviewWorkspace({
   const queueHref = `/admin/queues/${encodeURIComponent(request.queueSlug)}?project=${encodeURIComponent(
     request.projectSlug
   )}`;
-  // An interstitial must be acknowledged; without the sheet, pressing the same
-  // button a second time is the acknowledgement.
-  const ackNeeded = Boolean(error && error.includes('acknowledge'));
 
   mainVerdictRef.current = () => {
+    if (shippingRef.current) return;
     if (unresolved.length > 0) shipVerdict('reject_corrections');
     else if (unscored === 0) shipVerdict('approve', ackNeeded);
   };
@@ -465,6 +520,7 @@ export function ReviewWorkspace({
             type="button"
             onClick={() => shipVerdict('reject_corrections')}
             className="ds-btn ds-btn--default"
+            disabled={shipping}
             title={`Ships ${unresolved.length} anchored correction(s) with the rejection`}
           >
             Reject with corrections ({unresolved.length})
@@ -475,7 +531,7 @@ export function ReviewWorkspace({
             type="button"
             onClick={() => shipVerdict('approve', ackNeeded)}
             className="ds-btn ds-btn--default"
-            disabled={unscored > 0}
+            disabled={shipping || unscored > 0}
             title={
               unscored > 0
                 ? `Score all criteria to proceed — ${unscored} left`
@@ -490,6 +546,7 @@ export function ReviewWorkspace({
           type="button"
           onClick={() => shipVerdict('reject_rerun')}
           className="ds-btn ds-btn--outline"
+          disabled={shipping}
           title="Rerun without corrections — the model gets no anchored notes"
         >
           Reject — rerun

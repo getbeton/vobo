@@ -1,9 +1,27 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
+
+vi.mock('next/cache', () => ({
+  revalidatePath: () => undefined,
+}));
+
+const actingUserId = { current: '' };
+vi.mock('@/lib/db/queries', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/db/queries')>();
+  return {
+    ...actual,
+    getUser: async () =>
+      actingUserId.current
+        ? { id: actingUserId.current, name: 'Test Reviewer', email: 't@test.local', emailVerified: true }
+        : null,
+  };
+});
+
 import { db, client, ensureMigrated, truncateAll, createFixtures } from './harness';
 import { createReview } from '@/lib/core/requests';
 import { claim, rankedQueue } from '@/lib/core/queue';
 import { ship } from '@/lib/core/verdict';
 import { setCriterionVerdict } from '@/lib/core/annotations';
+import { shipAction } from '@/lib/actions/review';
 
 /**
  * VOBO-223. A verdict used to end at `router.push('/queue')`, so the reviewer
@@ -32,6 +50,7 @@ describe('what comes after a verdict', () => {
   beforeEach(async () => {
     await truncateAll();
     fixtures = await createFixtures();
+    actingUserId.current = fixtures.userId;
     ids = [];
     for (let i = 0; i < 3; i++) {
       const { request } = await createReview(db, {
@@ -70,6 +89,20 @@ describe('what comes after a verdict', () => {
     }
     const ranked = await rankedQueue(db, fixtures.queueId, fixtures.userId);
     expect(ranked).toHaveLength(0);
+  });
+
+  it('shipAction returns a next id the reviewer already holds', async () => {
+    // claim() refuses a live lease, including the current user's. advance
+    // must skip claimAction when the successor is already ours — which only
+    // works if shipAction says so.
+    await claim(db, ids[0], fixtures.userId);
+    await claim(db, ids[1], fixtures.userId);
+    await scoreAll(ids[0]);
+    const res = await shipAction({ requestId: ids[0], kind: 'approve' });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data?.nextRequestId).toBe(ids[1]);
+    expect(res.data?.nextLeaseMine).toBe(true);
   });
 
   it('still lists a request another reviewer holds, so the caller can skip it', async () => {

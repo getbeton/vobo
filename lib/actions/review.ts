@@ -156,13 +156,16 @@ export const shipAction = wrap(
       where: eq(reviewRequests.id, input.requestId),
     });
     let nextRequestId: string | null = null;
+    let nextLeaseMine = false;
     if (request) {
       const ranked = await rankedQueue(db, request.queueId, user.id);
-      nextRequestId =
-        ranked.find((r) => r.request.id !== input.requestId && !(r.lease && r.lease.userId !== user.id))
-          ?.request.id ?? null;
+      const next = ranked.find(
+        (r) => r.request.id !== input.requestId && !(r.lease && r.lease.userId !== user.id)
+      );
+      nextRequestId = next?.request.id ?? null;
+      nextLeaseMine = Boolean(next?.lease && next.lease.userId === user.id);
     }
-    return { ...res, nextRequestId };
+    return { ...res, nextRequestId, nextLeaseMine };
   }
 );
 
