@@ -38,7 +38,12 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   // Operator alert feed: recent load-bearing events across THIS workspace. The
   // join had no project predicate at all, so another tenant's escalation would
   // have appeared in the bell.
-  const alertTypes = ['decision.escalated', 'correction.persisting', 'sla.timeout'];
+  const alertTypes = [
+    'decision.escalated',
+    'correction.persisting',
+    'sla.timeout',
+    'request.budget_exhausted',
+  ];
   const alertRows = projectIds.length
     ? await db
         .select({ event: events, request: reviewRequests })
@@ -73,13 +78,17 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           ? `Model ignored ${(event.payload as any).count} correction(s) on “${request.title}”`
           : event.type === 'decision.escalated'
             ? `Escalation on “${request.title}” — needs a ruling`
-            : `SLA timeout on “${request.title}” (${(event.payload as any).mode})`,
+            : event.type === 'request.budget_exhausted'
+              ? `Last round used on “${request.title}”. An operator must review it.`
+              : `SLA timeout on “${request.title}” (${(event.payload as any).mode})`,
       kind:
         event.type === 'correction.persisting'
           ? 'persisting'
           : event.type === 'decision.escalated'
             ? 'escalation'
-            : 'sla',
+            : event.type === 'request.budget_exhausted'
+              ? 'budget'
+              : 'sla',
       at: event.createdAt.toISOString().slice(0, 16).replace('T', ' '),
     })),
   };

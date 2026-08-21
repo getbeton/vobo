@@ -89,6 +89,7 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
         projectSlug: project?.slug ?? '',
         policyLabel: pv ? `policy v${pv.version}` : '',
         roundBudget: policy?.roundBudget ?? 3,
+        budgetExhausted: Boolean(request.budgetExhaustedAt),
       }}
       contentMd={version.contentMd}
       versionId={version.id}

@@ -121,10 +121,7 @@ describe('what comes after a verdict', () => {
     expect(row!.lease?.userId).toBe(other);
   });
 
-  it('refuses a rejection at the round-budget wall — escalate stays the exit there', async () => {
-    // The engine tells the reviewer to escalate at the wall, so the compare
-    // view keeps its Escalate button even though the workspace dropped it.
-    // A budget of 1 puts round 1 at the wall without faking a version history.
+  it('a rejection at the round-budget wall ships — budget-wall.test.ts owns the rest', async () => {
     const tight = await createFixtures({ roundBudget: 1 });
     const { request } = await createReview(db, {
       projectId: tight.projectId,
@@ -143,8 +140,11 @@ describe('what comes after a verdict', () => {
         verdict: 'fail',
       });
     }
-    await expect(
-      ship(db, { requestId: request.id, userId: tight.userId, kind: 'reject_corrections' })
-    ).rejects.toMatchObject({ code: 'round_budget_exceeded' });
+    const res = await ship(db, {
+      requestId: request.id,
+      userId: tight.userId,
+      kind: 'reject_rerun',
+    });
+    expect(res.status).toBe('rejected');
   });
 });

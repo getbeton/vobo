@@ -43,6 +43,7 @@ export default async function TimelinePage({ params }: { params: Promise<{ id: s
     'decision.accepted': '✓',
     'decision.rejected': '✗',
     'decision.escalated': '▲',
+    'request.budget_exhausted': '⚑',
     'anchor.repinned': '📌',
     'anchor.retired': '🗑',
     'sla.timeout': '⏰',

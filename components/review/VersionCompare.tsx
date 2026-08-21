@@ -19,7 +19,7 @@ import {
  * low confidence), synchronized scroll, version log rail (any-vs-any,
  * default latest-vs-last-verdicted), prior-findings rail "verify against
  * intent" with Resolved C · Persists P · Re-pin O · Retire X (reason),
- * round-budget banner → escalate, decision bar with server gates.
+ * round-budget banner, decision bar with server gates.
  */
 
 interface VersionInfo {
@@ -116,7 +116,14 @@ export function VersionCompare({
   criteriaScored,
   unscoredCount,
 }: {
-  request: { id: string; title: string; round: number; roundBudget: number; status: string };
+  request: {
+    id: string;
+    title: string;
+    round: number;
+    roundBudget: number;
+    status: string;
+    budgetExhausted: boolean;
+  };
   left: VersionInfo;
   right: VersionInfo;
   versions: Array<{ number: number; author: string; hash: string; human: boolean }>;
@@ -130,8 +137,6 @@ export function VersionCompare({
   const [repinFor, setRepinFor] = useState<string | null>(null);
   const [retireFor, setRetireFor] = useState<string | null>(null);
   const [retireReason, setRetireReason] = useState('');
-  const [escReason, setEscReason] = useState('');
-  const [showEscalate, setShowEscalate] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [gateInfo, setGateInfo] = useState<{ blocked: boolean; reasons: string[]; interstitials: string[] } | null>(null);
   const leftRef = useRef<HTMLDivElement | null>(null);
@@ -217,13 +222,12 @@ export function VersionCompare({
     });
   };
 
-  const ship = (kind: 'approve' | 'reject_corrections' | 'escalate', ack = false) => {
+  const ship = (kind: 'approve' | 'reject_corrections', ack = false) => {
     setError(null);
     startTransition(async () => {
       const res = await shipAction({
         requestId: request.id,
         kind,
-        reason: kind === 'escalate' ? escReason : undefined,
         acknowledgeInterstitials: ack,
       });
       if (res.ok) router.push('/queue');
@@ -415,8 +419,9 @@ export function VersionCompare({
             fontSize: 13,
           }}
         >
-          Round budget reached. Rejecting again would exceed the policy budget — escalate to the
-          operator instead.
+          {request.budgetExhausted
+            ? 'This request used the last policy round. A further reject is refused.'
+            : 'This is the last round. A reject flags the request for an operator.'}
         </div>
       )}
       {error && (
@@ -676,29 +681,19 @@ export function VersionCompare({
               </button>
               <button
                 type="button"
-                onClick={() => (budgetReached ? setShowEscalate(true) : ship('reject_corrections'))}
+                onClick={() => ship('reject_corrections')}
                 className="ds-btn ds-btn--outline"
-                disabled={budgetReached}
-                title={budgetReached ? 'Round budget reached — escalate instead' : ''}
+                disabled={request.budgetExhausted}
+                title={
+                  request.budgetExhausted
+                    ? 'This request already used the last policy round'
+                    : budgetReached
+                      ? 'This is the last round. A reject flags the request for an operator.'
+                      : ''
+                }
               >
                 Reject with corrections
               </button>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input
-                  value={escReason}
-                  onChange={(e) => setEscReason(e.target.value)}
-                  placeholder="Escalation reason — required"
-                  style={{ flex: 1, border: '1px solid var(--input)', borderRadius: 6, padding: '7px 10px', fontSize: 13, outline: 'none' }}
-                />
-                <button
-                  type="button"
-                  onClick={() => ship('escalate')}
-                  className="ds-btn ds-btn--destructive"
-                  disabled={escReason.trim().length < 4}
-                >
-                  Escalate
-                </button>
-              </div>
             </div>
           </div>
         </div>
