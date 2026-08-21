@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { FileText } from 'lucide-react';
 import {
   addCommentAction,
+  editCommentAction,
   resolveCommentAction,
   setCriterionAction,
   shipAction,
@@ -68,6 +69,12 @@ const kbdSolid: React.CSSProperties = {
   padding: '1px 6px',
 };
 
+/** The range the open composer will anchor on. Amber, so it reads as unsaved. */
+const pendingStyle: React.CSSProperties = {
+  background: 'var(--amber-100)',
+  borderBottom: '2px dashed var(--amber-500)',
+};
+
 function annStyle(a: AnnotationData): React.CSSProperties {
   if (a.resolved)
     return { background: 'var(--green-100)', borderBottom: '2px solid var(--green-500)' };
@@ -100,7 +107,9 @@ export function ReviewWorkspace({
     null
   );
   const [coText, setCoText] = useState('');
-  const [coExpected, setCoExpected] = useState('');
+  // The comment being edited, and its working body.
+  const [editing, setEditing] = useState<string | null>(null);
+  const [editText, setEditText] = useState('');
   const [editMode, setEditMode] = useState(false);
   const [presubmit, setPresubmit] = useState(false);
   const [gateInfo, setGateInfo] = useState<{ blocked: boolean; reasons: string[]; interstitials: string[] } | null>(null);
@@ -108,6 +117,10 @@ export function ReviewWorkspace({
   const [error, setError] = useState<string | null>(null);
   const editRef = useRef<HTMLDivElement>(null);
   const artifactRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const railRef = useRef<HTMLDivElement>(null);
+  // Set in the same tick so a held ⌘↵ cannot fire save twice before React commits.
+  const commentBusyRef = useRef(false);
 
   const unresolved = annotations.filter((a) => !a.resolved && a.bornRound === request.round);
   const unscored = criteria.filter((c) => !c.verdict).length;
@@ -127,22 +140,49 @@ export function ReviewWorkspace({
     if (contentMd.slice(last).trim())
       paras.push({ start: last, end: contentMd.length, text: contentMd.slice(last) });
     return paras.map((p) => {
+      // The open composer's range is overlaid like an annotation, so the
+      // reviewer keeps seeing what they picked. The browser selection is gone
+      // the moment they click into the composer.
+      const pending =
+        composer && composer.start >= p.start && composer.start < p.end
+          ? { startPos: composer.start, endPos: composer.end }
+          : null;
       const marks = annotations
         .filter((a) => a.startPos >= p.start && a.startPos < p.end)
         .sort((a, b) => a.startPos - b.startPos);
-      const segs: Array<{ text: string; start: number; ann: AnnotationData | null }> = [];
+      const overlay: Array<{ startPos: number; endPos: number; ann: AnnotationData | null }> = [
+        ...marks.map((a) => ({ startPos: a.startPos, endPos: a.endPos, ann: a })),
+        ...(pending ? [{ ...pending, ann: null }] : []),
+      ].sort((a, b) => a.startPos - b.startPos);
+
+      const segs: Array<{
+        text: string;
+        start: number;
+        ann: AnnotationData | null;
+        pending: boolean;
+      }> = [];
       let pos = p.start;
-      for (const a of marks) {
-        if (a.startPos < pos) continue; // overlap: skip
-        if (a.startPos > pos) segs.push({ text: contentMd.slice(pos, a.startPos), start: pos, ann: null });
-        const end = Math.min(a.endPos, p.end);
-        segs.push({ text: contentMd.slice(a.startPos, end), start: a.startPos, ann: a });
+      for (const mark of overlay) {
+        if (mark.startPos < pos) continue; // overlap: skip
+        if (mark.startPos > pos)
+          segs.push({ text: contentMd.slice(pos, mark.startPos), start: pos, ann: null, pending: false });
+        const end = Math.min(mark.endPos, p.end);
+        segs.push({
+          text: contentMd.slice(mark.startPos, end),
+          start: mark.startPos,
+          ann: mark.ann,
+          pending: mark.ann === null,
+        });
         pos = end;
       }
-      if (pos < p.end) segs.push({ text: contentMd.slice(pos, p.end), start: pos, ann: null });
-      return { ...p, segs: segs.length ? segs : [{ text: p.text, start: p.start, ann: null }] };
+      if (pos < p.end)
+        segs.push({ text: contentMd.slice(pos, p.end), start: pos, ann: null, pending: false });
+      return {
+        ...p,
+        segs: segs.length ? segs : [{ text: p.text, start: p.start, ann: null, pending: false }],
+      };
     });
-  }, [contentMd, annotations]);
+  }, [contentMd, annotations, composer]);
 
   const captureSelection = () => {
     const sel = window.getSelection();
@@ -162,23 +202,66 @@ export function ReviewWorkspace({
     if (end <= start) return;
     setComposer({ start, end, phrase: contentMd.slice(start, end).slice(0, 60) });
     setCoText('');
-    setCoExpected('');
+    setEditing(null);
   };
 
+  // Open the composer: show the right rail, scroll it into view, take the
+  // cursor. Selecting text used to change nothing on screen — the reviewer had
+  // to hunt for the composer down the rail.
+  useEffect(() => {
+    if (!composer) return;
+    setRightOpen(true);
+    const id = window.setTimeout(() => {
+      composerRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      composerRef.current?.focus();
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [composer]);
+
   const saveComment = () => {
-    if (!composer || !coText.trim()) return;
+    if (!composer || !coText.trim() || commentBusyRef.current) return;
+    commentBusyRef.current = true;
+    setError(null);
+    const { start, end } = composer;
+    const body = coText.trim();
+    startTransition(async () => {
+      try {
+        const res = await addCommentAction({
+          requestId: request.id,
+          body,
+          startPos: start,
+          endPos: end,
+        });
+        if (!res.ok) {
+          setError(res.error);
+          return;
+        }
+        setComposer(null);
+        setCoText('');
+        router.refresh();
+      } finally {
+        commentBusyRef.current = false;
+      }
+    });
+  };
+
+  const saveEditedComment = (annotationId: string) => {
+    const body = editText.trim();
+    if (!body || commentBusyRef.current) return;
+    commentBusyRef.current = true;
     setError(null);
     startTransition(async () => {
-      const res = await addCommentAction({
-        requestId: request.id,
-        body: coText.trim(),
-        expected: coExpected.trim() || undefined,
-        startPos: composer.start,
-        endPos: composer.end,
-      });
-      if (!res.ok) setError(res.error);
-      setComposer(null);
-      router.refresh();
+      try {
+        const res = await editCommentAction(request.id, annotationId, body);
+        if (!res.ok) {
+          setError(res.error);
+          return;
+        }
+        setEditing(null);
+        router.refresh();
+      } finally {
+        commentBusyRef.current = false;
+      }
     });
   };
 
@@ -243,6 +326,7 @@ export function ReviewWorkspace({
       if ((e.target as HTMLElement)?.closest('input,textarea,[contenteditable]')) return;
       if (e.key === 'Escape') {
         setComposer(null);
+        setEditing(null);
         setPresubmit(false);
       }
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') openPresubmit();
@@ -629,8 +713,14 @@ export function ReviewWorkspace({
                       <span
                         key={seg.start}
                         data-seg-start={seg.start}
-                        style={seg.ann ? annStyle(seg.ann) : undefined}
-                        title={seg.ann ? seg.ann.body : undefined}
+                        style={
+                          seg.ann
+                            ? annStyle(seg.ann)
+                            : seg.pending
+                              ? pendingStyle
+                              : undefined
+                        }
+                        title={seg.ann ? seg.ann.body : seg.pending ? 'Selected — write the comment' : undefined}
                       >
                         {seg.text}
                       </span>
@@ -816,8 +906,17 @@ export function ReviewWorkspace({
                     </button>
                   </div>
                   <textarea
+                    ref={composerRef}
                     value={coText}
                     onChange={(e) => setCoText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                        e.preventDefault();
+                        if (e.repeat) return;
+                        saveComment();
+                      }
+                      if (e.key === 'Escape') setComposer(null);
+                    }}
                     rows={3}
                     placeholder="Comment — what’s wrong here and what the regeneration should say instead"
                     style={{
@@ -831,20 +930,6 @@ export function ReviewWorkspace({
                       background: '#fff',
                     }}
                   />
-                  <input
-                    value={coExpected}
-                    onChange={(e) => setCoExpected(e.target.value)}
-                    placeholder="Expected — a testable outcome for the fix"
-                    style={{
-                      border: '1px solid var(--input)',
-                      borderRadius: 6,
-                      padding: '7px 10px',
-                      fontSize: 13,
-                      fontFamily: 'inherit',
-                      outline: 'none',
-                      background: '#fff',
-                    }}
-                  />
                   <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
                     <button
                       type="button"
@@ -852,7 +937,7 @@ export function ReviewWorkspace({
                       disabled={!coText.trim()}
                       className="ds-btn ds-btn--default ds-btn--sm"
                     >
-                      Comment
+                      Comment ⌘↵
                     </button>
                     <button
                       type="button"
@@ -909,6 +994,28 @@ export function ReviewWorkspace({
                     >
                       “{cm.quote.slice(0, 40)}”
                     </span>
+                    {!cm.resolved && editing !== cm.id && (
+                      <button
+                        type="button"
+                        title="Edit this comment"
+                        onClick={() => {
+                          setEditing(cm.id);
+                          setEditText(cm.body);
+                        }}
+                        style={{
+                          width: 22,
+                          height: 22,
+                          borderRadius: 4,
+                          cursor: 'pointer',
+                          color: 'var(--slate-400)',
+                          background: 'none',
+                          border: 'none',
+                          fontSize: 12,
+                        }}
+                      >
+                        ✎
+                      </button>
+                    )}
                     {!cm.resolved && (
                       <button
                         type="button"
@@ -933,8 +1040,65 @@ export function ReviewWorkspace({
                       </button>
                     )}
                   </div>
-                  <span style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.4 }}>{cm.body}</span>
-                  {cm.expected && (
+                  {editing === cm.id ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                      <textarea
+                        autoFocus
+                        value={editText}
+                        onChange={(e) => setEditText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                            e.preventDefault();
+                            if (e.repeat) return;
+                            saveEditedComment(cm.id);
+                          }
+                          if (e.key === 'Escape') setEditing(null);
+                        }}
+                        rows={3}
+                        style={{
+                          border: '1px solid var(--input)',
+                          borderRadius: 6,
+                          padding: '8px 10px',
+                          fontSize: 13,
+                          fontFamily: 'inherit',
+                          outline: 'none',
+                          resize: 'vertical',
+                          background: '#fff',
+                        }}
+                      />
+                      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                        <button
+                          type="button"
+                          onClick={() => saveEditedComment(cm.id)}
+                          disabled={!editText.trim() || editText.trim() === cm.body}
+                          className="ds-btn ds-btn--default ds-btn--sm"
+                        >
+                          Save ⌘↵
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setEditing(null)}
+                          style={{
+                            color: 'var(--slate-500)',
+                            fontSize: 12,
+                            cursor: 'pointer',
+                            background: 'none',
+                            border: 'none',
+                          }}
+                        >
+                          Cancel
+                        </button>
+                        <span style={{ fontSize: 11, color: 'var(--slate-400)' }}>
+                          The anchor stays put — only the text changes.
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <span style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.4 }}>{cm.body}</span>
+                  )}
+                  {/* The composer no longer writes `expected`, but rows from
+                      before the change still carry one and must still render. */}
+                  {cm.expected && editing !== cm.id && (
                     <span style={{ fontSize: 12, color: 'var(--slate-500)', lineHeight: 1.5 }}>
                       Expected: {cm.expected}
                     </span>

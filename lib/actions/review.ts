@@ -6,7 +6,12 @@ import { getUser } from '@/lib/db/queries';
 import { ApiProblem } from '@/lib/core/requests';
 import { can, workspaceOfRequest } from '@/lib/core/authz';
 import { claim, release } from '@/lib/core/queue';
-import { addComment, resolveComment, setCriterionVerdict } from '@/lib/core/annotations';
+import {
+  addComment,
+  editComment,
+  resolveComment,
+  setCriterionVerdict,
+} from '@/lib/core/annotations';
 import {
   ship,
   VerdictKind,
@@ -59,7 +64,6 @@ export const addCommentAction = wrap(
   async (input: {
     requestId: string;
     body: string;
-    expected?: string;
     startPos: number;
     endPos: number;
     parentId?: string;
@@ -68,6 +72,14 @@ export const addCommentAction = wrap(
     const ann = await addComment(db, { ...input, userId: user.id });
     revalidatePath(`/review/${input.requestId}`);
     return { annotationId: ann.id };
+  }
+);
+
+export const editCommentAction = wrap(
+  async (requestId: string, annotationId: string, body: string) => {
+    const user = await guardReviewer(requestId);
+    await editComment(db, { requestId, annotationId, userId: user.id, body });
+    revalidatePath(`/review/${requestId}`);
   }
 );
 
