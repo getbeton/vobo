@@ -1,119 +1,139 @@
-# Next.js SaaS Starter
+# Vobo – Human <ins>Review</ins> for AI ~~Slop~~ Output
 
-This is a starter template for building a SaaS application using **Next.js** with support for authentication, Stripe integration for payments, and a dashboard for logged-in users.
+No matter what your AI does – text, image, sounds or video – Vobo helps you review its products before slop goes live.
 
-**Demo: [https://next-saas-start.vercel.app/](https://next-saas-start.vercel.app/)**
+Each Vobo queue receives input and output of your model and lets your reviewers check it against policy. All decisions are stored in a hashed chain of evidence and can be POSTed wherever you want.
+
+We don't replace your eval tools. We make human review convenient, so you don't footgun yourself.
+
+_The name comes from *visto bueno* (V°B°) — the Latin-American sign-off “seen-good”._
+
+[vobo.dev](https://vobo.dev/?utm_source=github&utm_medium=readme&utm_campaign=repo) · [Docs](https://vobo.dev/docs/quickstart) · [X](https://x.com/voboreview) · [LinkedIn](https://linkedin.com/company/voboreview)
 
 ## Features
 
-- Marketing landing page (`/`) with animated Terminal element
-- Pricing page (`/pricing`) which connects to Stripe Checkout
-- Dashboard pages with CRUD operations on users/teams
-- Basic RBAC with Owner and Member roles
-- Subscription management with Stripe Customer Portal
-- Email/password authentication with JWTs stored to cookies
-- Global middleware to protect logged-in routes
-- Local middleware to protect Server Actions or validate Zod schemas
-- Activity logging system for any user events
+- **Anchored comments.** A comment sticks to a place in the artifact. It stays across versions until someone resolves it.
+- **Data in and data out.** HTTP, MCP, and webhooks. You POST an artifact. You get a signed decision back.
+- **Hotkeys.** The station is built for the keyboard. `⌘↵` ships a verdict.
+- **Access control.** Admin and reviewer roles on every plan.
+- **Text now, image WIP.** Sound and video are on the roadmap.
+- **Retrievable traces.** Every decision is on a hash chain. You can pull the full record.
 
-## Tech Stack
+## The loop
 
-- **Framework**: [Next.js](https://nextjs.org/)
-- **Database**: [Postgres](https://www.postgresql.org/)
-- **ORM**: [Drizzle](https://orm.drizzle.team/)
-- **Payments**: [Stripe](https://stripe.com/)
-- **UI Library**: [shadcn/ui](https://ui.shadcn.com/)
+```mermaid
+flowchart TD
+  create["create review"] --> open["open"]
+  open -->|claim| claimed["claimed"]
+  claimed -->|verdict| accepted["accepted"]
+  claimed -->|verdict| rejected["rejected — awaiting version"]
+  claimed -->|verdict| escalated["escalated"]
+  rejected -->|submit version| open
+```
 
-## Getting Started
+`create review` is an idempotent upsert on the caller's request id. `submit version` never creates a request. `accepted` is terminal: do not regenerate it.
+
+## Get started
+
+### Managed cloud
+
+Sign up on [vobo.dev](https://vobo.dev/?utm_source=github&utm_medium=readme&utm_campaign=repo&utm_content=get-started).
+
+Free is capped at 1 queue, 5 users and 1 000 reviews a month. Paid is $0.10 per human review and capped at 20 queues without seat or review caps. All integrations are free besides verbatim log drain (on the roadmap).
+
+The LLM judge is on the roadmap. It will be free on any plan when you bring your own key. Paid will also let you use our tokens, charged per review.
+
+Setup is in the [docs](https://vobo.dev/docs/quickstart).
+
+### Enterprise
+
+Open-core self-host is capped at 20 queues. If you need more than 20, write to [v@vobo.dev](mailto:v@vobo.dev) for an enterprise licence.
+
+### Run it locally
+
+You need Node.js 22+, [pnpm](https://pnpm.io), and Postgres.
 
 ```bash
-git clone https://github.com/nextjs/saas-starter
-cd saas-starter
+git clone https://github.com/getbeton/vobo.git
+cd vobo
 pnpm install
+cp .env.example .env
 ```
 
-## Running Locally
-
-[Install](https://docs.stripe.com/stripe-cli) and log in to your Stripe account:
-
-```bash
-stripe login
-```
-
-Use the included setup script to create your `.env` file:
-
-```bash
-pnpm db:setup
-```
-
-Run the database migrations and seed the database with a default user and team:
+Set `AUTH_SECRET` (`openssl rand -base64 32`) and `POSTGRES_URL`. Then:
 
 ```bash
 pnpm db:migrate
-pnpm db:seed
+pnpm db:seed          # prints the admin password and API key once
+pnpm dev              # http://localhost:3000
+pnpm worker           # webhooks, lease expiry, SLA sweep — second process
 ```
 
-This will create the following user and team:
+`pnpm db:seed` writes one workspace, the default queue, and one project-scoped API key. Store the key. It is not shown again.
 
-- User: `test@test.com`
-- Password: `admin123`
+Without `RESEND_API_KEY`, magic links print to the server log. That is enough for local work.
 
-You can also create new users through the `/sign-up` route.
+Production topology, Railway, and DNS live in [`DEPLOY.md`](./DEPLOY.md).
 
-Finally, run the Next.js development server:
+## Connect a pipeline
+
+Same contract on every path. Ids belong to the caller and must be deterministic.
+
+| Path | Use when |
+|---|---|
+| **HTTP** `Bearer` on `/api/v1/reviews`, `/api/v1/versions`, `/api/v1/corrections`, `/api/v1/review`, `/api/v1/cursor` | Any pipeline |
+| **MCP** `request_review`, `submit_version`, `list_reviews`, `get_review`, `get_corrections`, `get_cursor`, `set_cursor` | An agent in a terminal. Full-loop parity with HTTP |
+| **Webhooks** Standard Webhooks signing, retry 10s / 60s / 180s, then DLQ | You have a server that can receive events |
+
+A consumer with no server **pulls**. `changed_since` takes an event-id cursor that Vobo stores per API key. `awaiting_version` is the regeneration work list. Two copies of the same agent cannot drift: there is no local cursor.
+
+Point the MCP server at an instance:
 
 ```bash
-pnpm dev
+export VOBO_API_URL=http://localhost:3000
+export VOBO_API_KEY=vobo_sk_…
+pnpm mcp
 ```
 
-Open [http://localhost:3000](http://localhost:3000) in your browser to see the app in action.
+## Community
 
-You can listen for Stripe webhooks locally through their CLI to handle subscription change events:
+| Channel | Best for |
+|---|---|
+| [vobo.dev/docs/quickstart](https://vobo.dev/docs/quickstart) | How to use the station |
+| [GitHub Issues](https://github.com/getbeton/vobo/issues/) | Bugs and errors in this repo |
+| [X](https://x.com/voboreview) | Product notes |
+| [LinkedIn](https://linkedin.com/company/voboreview) | Company notes |
 
-```bash
-stripe listen --forward-to localhost:3000/api/stripe/webhook
-```
+## Contributing
 
-## Testing Payments
+Open a pull request against `staging`. Run `pnpm test` first.
 
-To test Stripe payments, use the following test card details:
+Do not invent UI. The prototype in `design/` is the spec.
 
-- Card Number: `4242 4242 4242 4242`
-- Expiration: Any future date
-- CVC: Any 3-digit number
+## License
 
-## Going to Production
+[Apache License 2.0](./LICENSE)
 
-When you're ready to deploy your SaaS application to production, follow these steps:
+## OSS tooling
 
-### Set up a production Stripe webhook
+These projects run the station. Thank you.
 
-1. Go to the Stripe Dashboard and create a new webhook for your production environment.
-2. Set the endpoint URL to your production API route (e.g., `https://yourdomain.com/api/stripe/webhook`).
-3. Select the events you want to listen for (e.g., `checkout.session.completed`, `customer.subscription.updated`).
+| Project | In Vobo | Links |
+|---|---|---|
+| [Next.js](https://nextjs.org) | The app | [repo](https://github.com/vercel/next.js) |
+| [React](https://react.dev) | UI | [repo](https://github.com/facebook/react) |
+| [Drizzle](https://orm.drizzle.team) | Schema and queries | [repo](https://github.com/drizzle-team/drizzle-orm) |
+| [Better Auth](https://www.better-auth.com) | Sessions and magic links | [repo](https://github.com/better-auth/better-auth) |
+| [MCP TypeScript SDK](https://modelcontextprotocol.io) | The MCP server | [repo](https://github.com/modelcontextprotocol/typescript-sdk) |
+| [Zod](https://zod.dev) | Request and event shapes | [repo](https://github.com/colinhacks/zod) |
+| [Tailwind CSS](https://tailwindcss.com) | Layout | [repo](https://github.com/tailwindlabs/tailwindcss) |
+| [postgres.js](https://github.com/porsager/postgres) | Postgres client | [repo](https://github.com/porsager/postgres) |
+| [pg-boss](https://github.com/timgit/pg-boss) | Jobs: webhooks, leases, SLA | [repo](https://github.com/timgit/pg-boss) |
+| [Radix UI](https://www.radix-ui.com) | Accessible primitives | [repo](https://github.com/radix-ui/primitives) |
+| [Lucide](https://lucide.dev) | Icons | [repo](https://github.com/lucide-icons/lucide) |
+| [SWR](https://swr.vercel.app) | Client data | [repo](https://github.com/vercel/swr) |
+| [Vitest](https://vitest.dev) | Tests | [repo](https://github.com/vitest-dev/vitest) |
+| [approx-string-match](https://www.npmjs.com/package/approx-string-match) | Re-anchoring after a rewrite | [repo](https://github.com/robertknight/approx-string-match-js) |
 
-### Deploy to Vercel
-
-1. Push your code to a GitHub repository.
-2. Connect your repository to [Vercel](https://vercel.com/) and deploy it.
-3. Follow the Vercel deployment process, which will guide you through setting up your project.
-
-### Add environment variables
-
-In your Vercel project settings (or during deployment), add all the necessary environment variables. Make sure to update the values for the production environment, including:
-
-1. `BASE_URL`: Set this to your production domain.
-2. `STRIPE_SECRET_KEY`: Use your Stripe secret key for the production environment.
-3. `STRIPE_WEBHOOK_SECRET`: Use the webhook secret from the production webhook you created in step 1.
-4. `POSTGRES_URL`: Set this to your production database URL.
-5. `AUTH_SECRET`: Set this to a random string. `openssl rand -base64 32` will generate one.
-
-## Other Templates
-
-While this template is intentionally minimal and to be used as a learning resource, there are other paid versions in the community which are more full-featured:
-
-- https://achromatic.dev
-- https://shipfa.st
-- https://makerkit.dev
-- https://zerotoshipped.com
-- https://turbostarter.dev
+---
+> _VOBO Oversees Bullshit Output. 2026-singularity._
