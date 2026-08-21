@@ -6,6 +6,7 @@ import Link from 'next/link';
 import { FileText } from 'lucide-react';
 import {
   addCommentAction,
+  claimAction,
   editCommentAction,
   resolveCommentAction,
   setCriterionAction,
@@ -19,8 +20,15 @@ import {
  * rail (prompt, files, source), center markdown with anchored highlights and
  * selection→composer (with Expected), right rail (Machine review · Criteria
  * with policy-version stamp · Comments with resolve-does-not-ship), edit
- * mode capturing a human-authored version, pre-submit sheet.
- * MVP: judge not configured — machine section renders its empty state.
+ * mode capturing a human-authored version.
+ *
+ * The verdicts sit in the top bar and ship in one click (VOBO-223). There is no
+ * pre-submit sheet: it asked the same four questions a second time. Escalate is
+ * gone from the UI by decision on 2026-08-20; the engine keeps the kind, the
+ * status and the event, because the four-state pull contract and existing rows
+ * depend on them.
+ *
+ * MVP: the judge does not run — the machine section renders its empty state.
  */
 
 export interface AnnotationData {
@@ -46,6 +54,8 @@ export interface CriterionData {
 interface RequestData {
   id: string;
   title: string;
+  queueSlug: string;
+  projectSlug: string;
   status: string;
   round: number;
   prompt: string | null;
@@ -111,16 +121,24 @@ export function ReviewWorkspace({
   const [editing, setEditing] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
   const [editMode, setEditMode] = useState(false);
-  const [presubmit, setPresubmit] = useState(false);
   const [gateInfo, setGateInfo] = useState<{ blocked: boolean; reasons: string[]; interstitials: string[] } | null>(null);
-  const [escReason, setEscReason] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [shipping, setShipping] = useState(false);
+  const [ackNeeded, setAckNeeded] = useState(false);
   const editRef = useRef<HTMLDivElement>(null);
   const artifactRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  // The key handler is bound once; the main verdict changes with the state.
+  const mainVerdictRef = useRef<(() => void) | null>(null);
+  const saveCommentRef = useRef<() => void>(() => {});
   const railRef = useRef<HTMLDivElement>(null);
   // Set in the same tick so a held ⌘↵ cannot fire save twice before React commits.
   const commentBusyRef = useRef(false);
+  const shippingRef = useRef(false);
+  const composerOpenRef = useRef(false);
+  const coTextRef = useRef('');
+  composerOpenRef.current = Boolean(composer);
+  coTextRef.current = coText;
 
   const unresolved = annotations.filter((a) => !a.resolved && a.bornRound === request.round);
   const unscored = criteria.filter((c) => !c.verdict).length;
@@ -264,6 +282,7 @@ export function ReviewWorkspace({
       }
     });
   };
+  saveCommentRef.current = saveComment;
 
   const setCriterion = (criterionId: string, verdict: 'pass' | 'fail' | 'na') => {
     startTransition(async () => {
@@ -272,64 +291,132 @@ export function ReviewWorkspace({
     });
   };
 
-  const openPresubmit = () => {
-    startTransition(async () => {
-      const res = await gateAction(request.id);
-      if (res.ok && res.data) setGateInfo(res.data as any);
-      setPresubmit(true);
+  // The gate used to be read only when the sheet opened. It now loads with the
+  // page, because the bar has to know whether Approve is blocked before it is
+  // clicked, not after.
+  useEffect(() => {
+    let live = true;
+    gateAction(request.id).then((res) => {
+      if (live && res.ok && res.data) setGateInfo(res.data as never);
     });
+    return () => {
+      live = false;
+    };
+  }, [request.id, annotations.length, criteria]);
+
+  /**
+   * Go to the next ranked item, or to the queue when there is none.
+   * Mirror QueueScreen.openOrClaim: if the reviewer already holds the next
+   * row, open it — claim() refuses a live lease, including our own.
+   * not_claimable/claim_race mean someone else got it only when the lease
+   * is not ours.
+   */
+  const advance = async (
+    nextRequestId: string | null | undefined,
+    nextLeaseMine?: boolean
+  ) => {
+    if (!nextRequestId) {
+      router.push('/queue');
+      return;
+    }
+    if (nextLeaseMine) {
+      router.push(`/review/${nextRequestId}`);
+      return;
+    }
+    const claimed = await claimAction(nextRequestId);
+    if (claimed.ok) {
+      router.push(`/review/${nextRequestId}`);
+      return;
+    }
+    if (claimed.code === 'claim_race' || claimed.code === 'not_claimable') {
+      router.push('/queue');
+      return;
+    }
+    router.push('/queue');
   };
 
-  const shipVerdict = (
-    kind: 'approve' | 'reject_corrections' | 'reject_rerun' | 'escalate',
-    ack = false
-  ) => {
+  const shipVerdict = (kind: 'approve' | 'reject_corrections' | 'reject_rerun', ack = false) => {
+    if (shippingRef.current) return;
+    shippingRef.current = true;
+    setShipping(true);
     setError(null);
     startTransition(async () => {
-      const res = await shipAction({
-        requestId: request.id,
-        kind,
-        reason: kind === 'escalate' ? escReason : undefined,
-        acknowledgeInterstitials: ack,
-      });
-      if (res.ok) {
-        setPresubmit(false);
-        router.push('/queue');
-      } else if (res.code === 'interstitial_unacknowledged') {
-        setError(res.error + ' — approve again to acknowledge.');
-      } else {
-        setError(res.error);
+      try {
+        const res = await shipAction({
+          requestId: request.id,
+          kind,
+          acknowledgeInterstitials: ack,
+        });
+        const data = res.data as
+          | { nextRequestId?: string | null; nextLeaseMine?: boolean }
+          | undefined;
+        if (res.ok) {
+          setAckNeeded(false);
+          await advance(data?.nextRequestId, data?.nextLeaseMine);
+        } else if (res.code === 'interstitial_unacknowledged') {
+          setAckNeeded(true);
+          setError(res.error + ' — press the same button again to acknowledge.');
+        } else {
+          setError(res.error);
+        }
+      } finally {
+        shippingRef.current = false;
+        setShipping(false);
       }
     });
   };
 
   const saveEdit = () => {
     const text = editRef.current?.innerText ?? '';
-    if (!text.trim()) return;
+    if (!text.trim() || shippingRef.current) return;
+    shippingRef.current = true;
+    setShipping(true);
     startTransition(async () => {
-      const res = await shipAction({
-        requestId: request.id,
-        kind: 'approve_edited',
-        editedContentMd: text,
-        acknowledgeInterstitials: true,
-      });
-      if (res.ok) router.push('/queue');
-      else {
-        setError(res.error);
-        setEditMode(false);
+      try {
+        const res = await shipAction({
+          requestId: request.id,
+          kind: 'approve_edited',
+          editedContentMd: text,
+          acknowledgeInterstitials: true,
+        });
+        const data = res.data as
+          | { nextRequestId?: string | null; nextLeaseMine?: boolean }
+          | undefined;
+        if (res.ok) {
+          setAckNeeded(false);
+          await advance(data?.nextRequestId, data?.nextLeaseMine);
+        } else {
+          setError(res.error);
+          setEditMode(false);
+        }
+      } finally {
+        shippingRef.current = false;
+        setShipping(false);
       }
     });
   };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.repeat) return;
       if ((e.target as HTMLElement)?.closest('input,textarea,[contenteditable]')) return;
       if (e.key === 'Escape') {
         setComposer(null);
         setEditing(null);
-        setPresubmit(false);
       }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') openPresubmit();
+      // ⌘↵ ships the main verdict — unless the composer is open. PR #5 bound
+      // the same chord to saveComment; a collapsed selection is a no-op, so
+      // the window handler would otherwise approve and drop unsaved coText.
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        if (shippingRef.current) return;
+        if (composerOpenRef.current) {
+          saveCommentRef.current();
+          return;
+        }
+        if (coTextRef.current.trim()) return;
+        mainVerdictRef.current?.();
+      }
       if (e.key === 'a' || e.key === 'A') captureSelection();
     };
     window.addEventListener('keydown', onKey);
@@ -337,8 +424,18 @@ export function ReviewWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const mainLabel = unresolved.length > 0 ? 'Reject' : 'Approve';
   const compareAvailable = request.round > 1;
+  // The judge does not exist yet (VOBO-176, VOBO-198). The empty state links to
+  // the queue rather than to a settings screen that could not configure one.
+  const queueHref = `/admin/queues/${encodeURIComponent(request.queueSlug)}?project=${encodeURIComponent(
+    request.projectSlug
+  )}`;
+
+  mainVerdictRef.current = () => {
+    if (shippingRef.current) return;
+    if (unresolved.length > 0) shipVerdict('reject_corrections');
+    else if (unscored === 0) shipVerdict('approve', ackNeeded);
+  };
 
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -408,14 +505,51 @@ export function ReviewWorkspace({
           </Link>
         )}
         <div style={{ flex: 1 }} />
+        {gateInfo?.blocked && (
+          <span
+            title={gateInfo.reasons.join(' · ')}
+            style={{ fontSize: 12, color: 'var(--slate-500)', maxWidth: 260 }}
+          >
+            {gateInfo.reasons[0]}
+          </span>
+        )}
+        {/* The verdicts live here. A modal that repeated the same four choices
+            made every decision cost two. */}
+        {unresolved.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => shipVerdict('reject_corrections')}
+            className="ds-btn ds-btn--default"
+            disabled={shipping}
+            title={`Ships ${unresolved.length} anchored correction(s) with the rejection`}
+          >
+            Reject with corrections ({unresolved.length})
+            <span style={kbdSolid}>⌘↵</span>
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => shipVerdict('approve', ackNeeded)}
+            className="ds-btn ds-btn--default"
+            disabled={shipping || unscored > 0}
+            title={
+              unscored > 0
+                ? `Score all criteria to proceed — ${unscored} left`
+                : 'Seals the content hash and ships a signed decision'
+            }
+          >
+            Approve — seal content hash
+            <span style={kbdSolid}>⌘↵</span>
+          </button>
+        )}
         <button
           type="button"
-          onClick={openPresubmit}
-          className="ds-btn ds-btn--default"
-          title={unscored > 0 ? `Score all criteria to proceed — ${unscored} left` : ''}
+          onClick={() => shipVerdict('reject_rerun')}
+          className="ds-btn ds-btn--outline"
+          disabled={shipping}
+          title="Rerun without corrections — the model gets no anchored notes"
         >
-          {mainLabel}
-          <span style={kbdSolid}>⌘↵</span>
+          Reject — rerun
         </button>
         <button
           type="button"
@@ -794,7 +928,15 @@ export function ReviewWorkspace({
                   lineHeight: 1.5,
                 }}
               >
-                No machine review on this version — the judge is not configured for this queue.
+                No machine review on this version. The judge does not run yet — no queue can turn
+                one on.{' '}
+                <Link
+                  href={queueHref}
+                  style={{ color: 'var(--blue-700)', textDecoration: 'none', fontWeight: 500 }}
+                >
+                  Open the queue page
+                </Link>{' '}
+                for the policy that governs this review.
               </div>
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0 4px' }}>
@@ -1141,132 +1283,6 @@ export function ReviewWorkspace({
         )}
       </div>
 
-      {/* Pre-submit sheet */}
-      {presubmit && (
-        <div
-          onClick={() => setPresubmit(false)}
-          style={{
-            position: 'fixed',
-            inset: 0,
-            background: 'rgba(0,0,0,.45)',
-            zIndex: 90,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              background: '#fff',
-              borderRadius: 12,
-              boxShadow: 'var(--shadow-lg)',
-              padding: 20,
-              width: 520,
-              maxWidth: '94vw',
-              maxHeight: '84vh',
-              overflow: 'auto',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 12,
-            }}
-          >
-            <div style={{ fontWeight: 600 }}>Ship a verdict — round {request.round} of {request.roundBudget}</div>
-            <div style={{ fontSize: 12.5, color: 'var(--slate-500)', lineHeight: 1.5 }}>
-              Ships as a signed decision event — verdict, criteria, anchored corrections payload.
-              Retried until the pipeline acks.
-            </div>
-            {gateInfo && gateInfo.reasons.length > 0 && (
-              <div
-                style={{
-                  border: '1px solid var(--amber-500)',
-                  background: 'var(--amber-50)',
-                  color: 'var(--amber-900)',
-                  borderRadius: 8,
-                  padding: '8px 12px',
-                  fontSize: 12.5,
-                  lineHeight: 1.5,
-                }}
-              >
-                {gateInfo.reasons.map((r) => (
-                  <div key={r}>{r}</div>
-                ))}
-              </div>
-            )}
-            {gateInfo && gateInfo.interstitials.length > 0 && (
-              <div
-                style={{
-                  border: '1px solid var(--blue-300)',
-                  background: 'var(--blue-50)',
-                  color: 'var(--blue-900)',
-                  borderRadius: 8,
-                  padding: '8px 12px',
-                  fontSize: 12.5,
-                  lineHeight: 1.5,
-                }}
-              >
-                {gateInfo.interstitials.map((r) => (
-                  <div key={r}>{r}</div>
-                ))}
-              </div>
-            )}
-            <div style={{ fontSize: 13 }}>
-              <strong>{unresolved.length}</strong> anchored correction
-              {unresolved.length === 1 ? '' : 's'} ship with a rejection · criteria{' '}
-              {criteria.length - unscored}/{criteria.length} scored
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <button
-                type="button"
-                onClick={() => shipVerdict('approve', true)}
-                className="ds-btn ds-btn--default"
-                disabled={Boolean(gateInfo?.blocked)}
-              >
-                Approve — seal content hash
-              </button>
-              <button
-                type="button"
-                onClick={() => shipVerdict('reject_corrections')}
-                className="ds-btn ds-btn--outline"
-                disabled={unresolved.length === 0}
-              >
-                Reject with corrections ({unresolved.length})
-              </button>
-              <button
-                type="button"
-                onClick={() => shipVerdict('reject_rerun')}
-                className="ds-btn ds-btn--outline"
-              >
-                Reject — rerun without corrections
-              </button>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input
-                  value={escReason}
-                  onChange={(e) => setEscReason(e.target.value)}
-                  placeholder="Escalation reason — required"
-                  style={{
-                    flex: 1,
-                    border: '1px solid var(--input)',
-                    borderRadius: 6,
-                    padding: '7px 10px',
-                    fontSize: 13,
-                    fontFamily: 'inherit',
-                    outline: 'none',
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={() => shipVerdict('escalate')}
-                  className="ds-btn ds-btn--destructive"
-                  disabled={escReason.trim().length < 4}
-                >
-                  Escalate
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -1,11 +1,13 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
+import { eq } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
+import { reviewRequests } from '@/lib/db/schema';
 import { getUser } from '@/lib/db/queries';
 import { ApiProblem } from '@/lib/core/requests';
 import { can, workspaceOfRequest } from '@/lib/core/authz';
-import { archiveRequests, claim, release } from '@/lib/core/queue';
+import { archiveRequests, claim, rankedQueue, release } from '@/lib/core/queue';
 import {
   addComment,
   editComment,
@@ -146,7 +148,24 @@ export const shipAction = wrap(
     const res = await ship(db, { ...input, userId: user.id });
     revalidatePath('/queue');
     revalidatePath(`/review/${input.requestId}`);
-    return res;
+    // The reviewer stays in the queue instead of bouncing back to the list
+    // 425 times. The ranking decides what "next" is, so the answer is the same
+    // row the queue would have offered. The shipped request has left
+    // open/claimed by now, so it cannot come back as its own successor.
+    const request = await db.query.reviewRequests.findFirst({
+      where: eq(reviewRequests.id, input.requestId),
+    });
+    let nextRequestId: string | null = null;
+    let nextLeaseMine = false;
+    if (request) {
+      const ranked = await rankedQueue(db, request.queueId, user.id);
+      const next = ranked.find(
+        (r) => r.request.id !== input.requestId && !(r.lease && r.lease.userId !== user.id)
+      );
+      nextRequestId = next?.request.id ?? null;
+      nextLeaseMine = Boolean(next?.lease && next.lease.userId === user.id);
+    }
+    return { ...res, nextRequestId, nextLeaseMine };
   }
 );
 

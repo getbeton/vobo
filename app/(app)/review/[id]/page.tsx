@@ -11,6 +11,8 @@ import {
   criteriaVerdicts,
   policyVersions,
   contextFiles,
+  queues,
+  projects,
 } from '@/lib/db/schema';
 import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
 import { NoAccess } from '@/components/shell/NoAccess';
@@ -30,6 +32,11 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
   if (!request) notFound();
   const wsId = await workspaceOfRequestOrNull(request.id);
   if (wsId === null || !(await canReview(user.id, wsId))) return <NoAccess />;
+
+  // The machine-review empty state links to the queue that governs this
+  // review, so both slugs travel with the request.
+  const queue = await db.query.queues.findFirst({ where: eq(queues.id, request.queueId) });
+  const project = await db.query.projects.findFirst({ where: eq(projects.id, request.projectId) });
 
   const version = await db.query.artifactVersions.findFirst({
     where: and(
@@ -78,6 +85,8 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
         round: request.round,
         prompt: request.prompt,
         source: request.source,
+        queueSlug: queue?.slug ?? '',
+        projectSlug: project?.slug ?? '',
         policyLabel: pv ? `policy v${pv.version}` : '',
         roundBudget: policy?.roundBudget ?? 3,
       }}
