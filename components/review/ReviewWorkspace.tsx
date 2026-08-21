@@ -119,6 +119,8 @@ export function ReviewWorkspace({
   const artifactRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const railRef = useRef<HTMLDivElement>(null);
+  // Set in the same tick so a held ⌘↵ cannot fire save twice before React commits.
+  const commentBusyRef = useRef(false);
 
   const unresolved = annotations.filter((a) => !a.resolved && a.bornRound === request.round);
   const unscored = criteria.filter((c) => !c.verdict).length;
@@ -217,30 +219,49 @@ export function ReviewWorkspace({
   }, [composer]);
 
   const saveComment = () => {
-    if (!composer || !coText.trim()) return;
+    if (!composer || !coText.trim() || commentBusyRef.current) return;
+    commentBusyRef.current = true;
     setError(null);
+    const { start, end } = composer;
+    const body = coText.trim();
     startTransition(async () => {
-      const res = await addCommentAction({
-        requestId: request.id,
-        body: coText.trim(),
-        startPos: composer.start,
-        endPos: composer.end,
-      });
-      if (!res.ok) setError(res.error);
-      setComposer(null);
-      router.refresh();
+      try {
+        const res = await addCommentAction({
+          requestId: request.id,
+          body,
+          startPos: start,
+          endPos: end,
+        });
+        if (!res.ok) {
+          setError(res.error);
+          return;
+        }
+        setComposer(null);
+        setCoText('');
+        router.refresh();
+      } finally {
+        commentBusyRef.current = false;
+      }
     });
   };
 
   const saveEditedComment = (annotationId: string) => {
     const body = editText.trim();
-    if (!body) return;
+    if (!body || commentBusyRef.current) return;
+    commentBusyRef.current = true;
     setError(null);
     startTransition(async () => {
-      const res = await editCommentAction(request.id, annotationId, body);
-      if (!res.ok) setError(res.error);
-      setEditing(null);
-      router.refresh();
+      try {
+        const res = await editCommentAction(request.id, annotationId, body);
+        if (!res.ok) {
+          setError(res.error);
+          return;
+        }
+        setEditing(null);
+        router.refresh();
+      } finally {
+        commentBusyRef.current = false;
+      }
     });
   };
 
@@ -891,6 +912,7 @@ export function ReviewWorkspace({
                     onKeyDown={(e) => {
                       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                         e.preventDefault();
+                        if (e.repeat) return;
                         saveComment();
                       }
                       if (e.key === 'Escape') setComposer(null);
@@ -1027,6 +1049,7 @@ export function ReviewWorkspace({
                         onKeyDown={(e) => {
                           if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                             e.preventDefault();
+                            if (e.repeat) return;
                             saveEditedComment(cm.id);
                           }
                           if (e.key === 'Escape') setEditing(null);
