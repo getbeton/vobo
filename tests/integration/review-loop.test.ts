@@ -240,7 +240,7 @@ describe('full regeneration loop with gates', () => {
     expect(shipped.status).toBe('rejected');
   });
 
-  it('orphaned anchors block approve until retired; round budget forces escalate', async () => {
+  it('orphaned anchors block approve until retired; last-round reject ships and flags', async () => {
     const { request } = await baseCreate();
     await reviewAndReject(request.id); // round 1 → rejected
 
@@ -305,21 +305,20 @@ describe('full regeneration loop with gates', () => {
         verdict: 'fail',
       });
     }
+    const last = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'reject_rerun',
+    });
+    expect(last.status).toBe('rejected');
+    const after = await db.query.reviewRequests.findFirst({
+      where: (t, { eq }) => eq(t.id, request.id),
+    });
+    expect(after?.budgetExhaustedAt).toBeInstanceOf(Date);
+
     await expect(
       ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_rerun' })
     ).rejects.toMatchObject({ code: 'round_budget_exceeded' });
-
-    await expect(
-      ship(db, { requestId: request.id, userId: fx.userId, kind: 'escalate', reason: 'no' })
-    ).rejects.toMatchObject({ code: 'escalation_reason_required' });
-
-    const esc = await ship(db, {
-      requestId: request.id,
-      userId: fx.userId,
-      kind: 'escalate',
-      reason: 'Model keeps thrashing after 3 rounds',
-    });
-    expect(esc.status).toBe('escalated');
   });
 });
 

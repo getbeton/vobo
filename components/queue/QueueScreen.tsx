@@ -103,7 +103,7 @@ export interface QueueMiss {
   environment: 'production' | 'test';
 }
 
-function QueueMissScreen({ miss }: { miss: QueueMiss }) {
+export function QueueMissScreen({ miss }: { miss: QueueMiss }) {
   const links = miss.available.map((q) => (
     <Link
       key={`${q.projectSlug}/${q.queueSlug}`}
@@ -202,6 +202,7 @@ export function QueueScreen({
   miss,
   canArchive = false,
   archivedHref = '/queue/archived',
+  failingHref = null,
 }: {
   rows: QueueRowData[];
   nextUp: QueueRowData | null;
@@ -210,6 +211,8 @@ export function QueueScreen({
   canArchive?: boolean;
   /** Where the operator's undo list lives, with the current queue selected. */
   archivedHref?: string;
+  /** Operator-only. Always visible when set — not nested in the bulk bar. */
+  failingHref?: string | null;
 }) {
   const router = useRouter();
   const [focusIdx, setFocusIdx] = useState(0);
@@ -309,6 +312,20 @@ export function QueueScreen({
       <div style={{ maxWidth: 880, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 18, fontWeight: 600 }}>Reviewer queue</span>
+          {failingHref && (
+            <Link
+              href={failingHref}
+              style={{
+                fontSize: 13,
+                color: 'var(--blue-700)',
+                textDecoration: 'none',
+                fontWeight: 500,
+                marginLeft: 4,
+              }}
+            >
+              Failing requests
+            </Link>
+          )}
           <span style={{ position: 'relative', display: 'inline-flex' }}>
             <span
               onMouseEnter={() => setTipRank(true)}

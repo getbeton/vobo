@@ -6,8 +6,9 @@ import { db } from '@/lib/db/drizzle';
 import { reviewRequests } from '@/lib/db/schema';
 import { getUser } from '@/lib/db/queries';
 import { ApiProblem } from '@/lib/core/requests';
-import { can, workspaceOfRequest } from '@/lib/core/authz';
+import { can, workspaceOfRequest, workspaceOfQueue } from '@/lib/core/authz';
 import { archiveRequests, claim, rankedQueue, release, unarchiveRequests } from '@/lib/core/queue';
+import { exportFailingCsv } from '@/lib/core/failing';
 import {
   addComment,
   editComment,
@@ -126,6 +127,7 @@ export const archiveRequestsAction = wrap(
     }
     const res = await archiveRequests(db, { requestIds, userId: user.id, reason });
     revalidatePath('/queue');
+    revalidatePath('/queue/failing');
     revalidatePath('/requests');
     return res;
   }
@@ -143,8 +145,20 @@ export const unarchiveRequestsAction = wrap(
     }
     const res = await unarchiveRequests(db, { requestIds, userId: user.id, reason });
     revalidatePath('/queue');
+    revalidatePath('/queue/failing');
     revalidatePath('/requests');
     return res;
+  }
+);
+
+export const exportFailingCsvAction = wrap(
+  async (queueId: string, requestIds: string[]) => {
+    const user = await getUser();
+    if (!user) throw new ApiProblem(401, 'unauthenticated', 'Sign in required');
+    const wsId = await workspaceOfQueue(queueId);
+    await can.operate(user.id, wsId);
+    const csv = await exportFailingCsv(db, { queueId, requestIds });
+    return { csv, filename: 'failing-requests.csv' };
   }
 );
 
@@ -164,6 +178,7 @@ export const shipAction = wrap(
     const user = await guardReviewer(input.requestId);
     const res = await ship(db, { ...input, userId: user.id });
     revalidatePath('/queue');
+    revalidatePath('/queue/failing');
     revalidatePath(`/review/${input.requestId}`);
     // The reviewer stays in the queue instead of bouncing back to the list
     // 425 times. The ranking decides what "next" is, so the answer is the same

@@ -79,6 +79,7 @@ export default async function ComparePage({
         round: request.round,
         roundBudget: policy?.roundBudget ?? 3,
         status: request.status,
+        budgetExhausted: Boolean(request.budgetExhaustedAt),
       }}
       left={{
         number: left.versionNumber,

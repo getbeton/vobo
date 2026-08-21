@@ -24,9 +24,9 @@ import {
  *
  * The verdicts sit in the top bar and ship in one click (VOBO-223). There is no
  * pre-submit sheet: it asked the same four questions a second time. Escalate is
- * gone from the UI by decision on 2026-08-20; the engine keeps the kind, the
- * status and the event, because the four-state pull contract and existing rows
- * depend on them.
+ * gone from the UI; a reject at the last policy round ships and flags the
+ * request for an operator. The engine keeps the escalate kind, because the
+ * four-state pull contract and existing rows depend on it.
  *
  * MVP: the judge does not run — the machine section renders its empty state.
  */
@@ -62,6 +62,7 @@ interface RequestData {
   source: string | null;
   policyLabel: string;
   roundBudget: number;
+  budgetExhausted: boolean;
 }
 
 const sectionHead: React.CSSProperties = {
@@ -347,12 +348,9 @@ export function ReviewWorkspace({
           kind,
           acknowledgeInterstitials: ack,
         });
-        const data = res.data as
-          | { nextRequestId?: string | null; nextLeaseMine?: boolean }
-          | undefined;
         if (res.ok) {
           setAckNeeded(false);
-          await advance(data?.nextRequestId, data?.nextLeaseMine);
+          await advance(res.data?.nextRequestId, res.data?.nextLeaseMine);
         } else if (res.code === 'interstitial_unacknowledged') {
           setAckNeeded(true);
           setError(res.error + ' — press the same button again to acknowledge.');
@@ -379,12 +377,9 @@ export function ReviewWorkspace({
           editedContentMd: text,
           acknowledgeInterstitials: true,
         });
-        const data = res.data as
-          | { nextRequestId?: string | null; nextLeaseMine?: boolean }
-          | undefined;
         if (res.ok) {
           setAckNeeded(false);
-          await advance(data?.nextRequestId, data?.nextLeaseMine);
+          await advance(res.data?.nextRequestId, res.data?.nextLeaseMine);
         } else {
           setError(res.error);
           setEditMode(false);
@@ -425,6 +420,8 @@ export function ReviewWorkspace({
   }, []);
 
   const compareAvailable = request.round > 1;
+  const budgetReached = request.round >= request.roundBudget;
+  const rejectBlocked = request.budgetExhausted;
   // The judge does not exist yet (VOBO-176, VOBO-198). The empty state links to
   // the queue rather than to a settings screen that could not configure one.
   const queueHref = `/admin/queues/${encodeURIComponent(request.queueSlug)}?project=${encodeURIComponent(
@@ -433,8 +430,9 @@ export function ReviewWorkspace({
 
   mainVerdictRef.current = () => {
     if (shippingRef.current) return;
-    if (unresolved.length > 0) shipVerdict('reject_corrections');
-    else if (unscored === 0) shipVerdict('approve', ackNeeded);
+    if (unresolved.length > 0) {
+      if (!rejectBlocked) shipVerdict('reject_corrections');
+    } else if (unscored === 0) shipVerdict('approve', ackNeeded);
   };
 
   return (
@@ -520,8 +518,12 @@ export function ReviewWorkspace({
             type="button"
             onClick={() => shipVerdict('reject_corrections')}
             className="ds-btn ds-btn--default"
-            disabled={shipping}
-            title={`Ships ${unresolved.length} anchored correction(s) with the rejection`}
+            disabled={shipping || rejectBlocked}
+            title={
+              rejectBlocked
+                ? 'This request already used the last policy round'
+                : `Ships ${unresolved.length} anchored correction(s) with the rejection`
+            }
           >
             Reject with corrections ({unresolved.length})
             <span style={kbdSolid}>⌘↵</span>
@@ -546,8 +548,12 @@ export function ReviewWorkspace({
           type="button"
           onClick={() => shipVerdict('reject_rerun')}
           className="ds-btn ds-btn--outline"
-          disabled={shipping}
-          title="Rerun without corrections — the model gets no anchored notes"
+          disabled={shipping || rejectBlocked}
+          title={
+            rejectBlocked
+              ? 'This request already used the last policy round'
+              : 'Rerun without corrections — the model gets no anchored notes'
+          }
         >
           Reject — rerun
         </button>
@@ -561,6 +567,21 @@ export function ReviewWorkspace({
         </button>
       </div>
 
+      {budgetReached && request.status !== 'accepted' && (
+        <div
+          style={{
+            background: 'var(--amber-50)',
+            borderBottom: '1px solid var(--amber-500)',
+            color: 'var(--amber-900)',
+            padding: '8px 24px',
+            fontSize: 13,
+          }}
+        >
+          {request.budgetExhausted
+            ? 'This request used the last policy round. A further reject is refused.'
+            : 'This is the last round. A reject flags the request for an operator.'}
+        </div>
+      )}
       {error && (
         <div
           style={{

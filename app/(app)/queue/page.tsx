@@ -8,6 +8,14 @@ import { QueueScreen, QueueRowData, QueueMiss } from '@/components/queue/QueueSc
 
 export const dynamic = 'force-dynamic';
 
+function failingHref(params: { project?: string; queue?: string; env?: string }) {
+  const q = new URLSearchParams();
+  if (params.project) q.set('project', params.project);
+  if (params.queue) q.set('queue', params.queue);
+  q.set('env', params.env === 'test' ? 'test' : 'production');
+  return `/queue/failing?${q.toString()}`;
+}
+
 export default async function QueuePage({
   searchParams,
 }: {
@@ -44,7 +52,15 @@ export default async function QueuePage({
       available: resolved.workspaceQueues,
       environment,
     };
-    return <QueueScreen rows={[]} nextUp={null} miss={miss} canArchive={canArchive} />;
+    return (
+      <QueueScreen
+        rows={[]}
+        nextUp={null}
+        miss={miss}
+        canArchive={canArchive}
+        failingHref={canArchive ? failingHref(params) : null}
+      />
+    );
   }
   const queue = resolved.queue;
   const archivedHref = `/queue/archived?project=${encodeURIComponent(
@@ -108,6 +124,7 @@ export default async function QueuePage({
       miss={null}
       canArchive={canArchive}
       archivedHref={archivedHref}
+      failingHref={canArchive ? failingHref(params) : null}
     />
   );
 }
