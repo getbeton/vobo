@@ -194,6 +194,7 @@ export async function submitVersion(db: Db, input: SubmitVersionInput) {
       return { request, version: latest, created: false as const, classifications: null };
     }
 
+    if (request.archivedAt) throw new ApiProblem(409, 'archived', 'Request is archived');
     if (request.status === 'accepted')
       throw new ApiProblem(409, 'already_accepted', 'Request is accepted — terminal');
     if (request.status !== 'rejected')

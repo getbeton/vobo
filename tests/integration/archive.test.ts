@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { db, client, ensureMigrated, truncateAll, createFixtures } from './harness';
-import { events, reviewRequests } from '@/lib/db/schema';
-import { createReview } from '@/lib/core/requests';
-import { archiveRequests, rankedQueue } from '@/lib/core/queue';
+import { events, leases, reviewRequests } from '@/lib/db/schema';
+import { createReview, submitVersion } from '@/lib/core/requests';
+import { archiveRequests, claim, rankedQueue, applySlaTimeouts } from '@/lib/core/queue';
+import { ship } from '@/lib/core/verdict';
 import { getVerifiedChain } from '@/lib/core/eventlog';
+import { GET as getReview } from '@/app/api/v1/review/route';
+import { GET as listReviews } from '@/app/api/v1/reviews/route';
 
 /**
  * VOBO-224. 425 open requests landed in one batch and some accounts get killed
@@ -122,5 +125,77 @@ describe('archiveRequests', () => {
     await archiveRequests(db, { requestIds: ids, userId: fixtures.userId });
     const rows = await db.select().from(reviewRequests);
     expect(rows).toHaveLength(4);
+  });
+
+  it('does not SLA-accept an archived request or append sla.timeout', async () => {
+    await db
+      .update(reviewRequests)
+      .set({ slaDueAt: new Date(Date.now() - 1000) })
+      .where(eq(reviewRequests.id, ids[0]));
+    await archiveRequests(db, { requestIds: [ids[0]], userId: fixtures.userId });
+    const n = await applySlaTimeouts(db);
+    expect(n).toBe(0);
+    const rows = await db.select().from(reviewRequests).where(eq(reviewRequests.id, ids[0]));
+    expect(rows[0].status).toBe('open');
+    const timeouts = await db
+      .select()
+      .from(events)
+      .where(and(eq(events.requestId, ids[0]), eq(events.type, 'sla.timeout')));
+    expect(timeouts).toHaveLength(0);
+  });
+
+  it('drops a live lease, then claim/ship/submitVersion refuse the row', async () => {
+    await claim(db, ids[0], fixtures.userId);
+    await archiveRequests(db, { requestIds: [ids[0]], userId: fixtures.userId });
+    const held = await db.select().from(leases).where(eq(leases.requestId, ids[0]));
+    expect(held).toHaveLength(0);
+
+    await expect(claim(db, ids[0], fixtures.userId)).rejects.toMatchObject({
+      code: 'archived',
+      status: 409,
+    });
+    await expect(
+      ship(db, { requestId: ids[0], userId: fixtures.userId, kind: 'approve' })
+    ).rejects.toMatchObject({ code: 'archived', status: 409 });
+    await expect(
+      submitVersion(db, {
+        projectId: fixtures.projectId,
+        customerRequestId: 'arch/0',
+        contentMd: 'a new version that must not land',
+      })
+    ).rejects.toMatchObject({ code: 'archived', status: 409 });
+  });
+
+  it('point-read surfaces archived_at so a poll does not look in-flight', async () => {
+    await archiveRequests(db, { requestIds: [ids[0]], userId: fixtures.userId });
+    const res = await getReview(
+      new Request('http://localhost/api/v1/review?request_id=arch/0', {
+        headers: { authorization: `Bearer ${fixtures.apiToken}` },
+      })
+    );
+    const body = await res.json();
+    expect(body.status).toBe('open');
+    expect(body.archived_at).toBeTruthy();
+  });
+
+  it('changed_since includes the archived row so the cursor cannot stall', async () => {
+    const beforeRes = await listReviews(
+      new Request('http://localhost/api/v1/reviews?queue=q', {
+        headers: { authorization: `Bearer ${fixtures.apiToken}` },
+      })
+    );
+    const before = await beforeRes.json();
+    await archiveRequests(db, { requestIds: [ids[0]], userId: fixtures.userId });
+    const deltaRes = await listReviews(
+      new Request(
+        `http://localhost/api/v1/reviews?queue=q&changed_since=${before.max_event_id}`,
+        { headers: { authorization: `Bearer ${fixtures.apiToken}` } }
+      )
+    );
+    const delta = await deltaRes.json();
+    const archived = delta.reviews.find((r: { id: string }) => r.id === ids[0]);
+    expect(archived).toBeTruthy();
+    expect(archived.archived_at).toBeTruthy();
+    expect(delta.max_event_id).toBeGreaterThan(before.max_event_id);
   });
 });

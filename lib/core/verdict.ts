@@ -171,6 +171,7 @@ export async function ship(db: Db, input: ShipInput) {
       .where(eq(reviewRequests.id, input.requestId))
       .for('update');
     if (!locked) throw new ApiProblem(404, 'request_not_found', 'Request not found');
+    if (locked.archivedAt) throw new ApiProblem(409, 'archived', 'Request is archived');
     if (['accepted', 'escalated'].includes(locked.status))
       throw new ApiProblem(409, 'terminal_status', `Request is ${locked.status}`);
 

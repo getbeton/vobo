@@ -213,7 +213,7 @@ export function QueueScreen({
   const [tipRank, setTipRank] = useState(false);
   const [tipNext, setTipNext] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [, startTransition] = useTransition();
+  const [isPending, startTransition] = useTransition();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   // Anchor for shift-click ranges, same behaviour as Apollo's list.
   const [anchor, setAnchor] = useState<number | null>(null);
@@ -242,7 +242,11 @@ export function QueueScreen({
     setError(null);
     startTransition(async () => {
       const res = await archiveRequestsAction(ids);
-      if (!res.ok) setError(res.error);
+      if (!res.ok) {
+        setError(res.error);
+        setConfirmArchive(false);
+        return;
+      }
       setConfirmArchive(false);
       setSelected(new Set());
       setAnchor(null);
@@ -683,8 +687,9 @@ export function QueueScreen({
                 <button
                   type="button"
                   onClick={archiveSelected}
+                  disabled={isPending}
                   className="ds-btn ds-btn--default"
-                  style={{ padding: '8px 16px', fontSize: 13 }}
+                  style={{ padding: '8px 16px', fontSize: 13, opacity: isPending ? 0.6 : 1 }}
                 >
                   Archive
                 </button>

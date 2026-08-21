@@ -230,10 +230,15 @@ export async function archiveRequests(
 ): Promise<{ archived: string[]; skipped: string[] }> {
   if (input.requestIds.length === 0) return { archived: [], skipped: [] };
   return db.transaction(async (tx) => {
+    // Lock in id order so two overlapping batches cannot deadlock, then skip
+    // anything already archived. The UPDATE is also gated on archived_at IS
+    // NULL so a concurrent archive cannot append a second signed event.
     const rows = await tx
       .select()
       .from(reviewRequests)
-      .where(inArray(reviewRequests.id, input.requestIds));
+      .where(inArray(reviewRequests.id, input.requestIds))
+      .orderBy(asc(reviewRequests.id))
+      .for('update');
 
     const archived: string[] = [];
     const skipped: string[] = [];
@@ -243,10 +248,16 @@ export async function archiveRequests(
         skipped.push(request.id);
         continue;
       }
-      await tx
+      const [updated] = await tx
         .update(reviewRequests)
         .set({ archivedAt: at, archivedBy: input.userId, updatedAt: at })
-        .where(eq(reviewRequests.id, request.id));
+        .where(and(eq(reviewRequests.id, request.id), isNull(reviewRequests.archivedAt)))
+        .returning();
+      if (!updated) {
+        skipped.push(request.id);
+        continue;
+      }
+      await tx.delete(leases).where(eq(leases.requestId, request.id));
       await appendEvent(tx, request.id, 'request.archived', {
         by: input.userId,
         status_at_archive: request.status,
@@ -272,6 +283,7 @@ export async function claim(db: Db, requestId: string, userId: string) {
       .where(eq(reviewRequests.id, requestId))
       .for('update');
     if (!request) throw new ApiProblem(404, 'request_not_found', 'Request not found');
+    if (request.archivedAt) throw new ApiProblem(409, 'archived', 'Request is archived');
     if (request.status !== 'open')
       throw new ApiProblem(409, 'not_claimable', `Request is ${request.status}`);
 
@@ -303,6 +315,7 @@ export async function release(db: Db, requestId: string, userId: string) {
       .where(eq(reviewRequests.id, requestId))
       .for('update');
     if (!request) throw new ApiProblem(404, 'request_not_found', 'Request not found');
+    if (request.archivedAt) throw new ApiProblem(409, 'archived', 'Request is archived');
     const [lease] = await tx.select().from(leases).where(eq(leases.requestId, requestId));
     if (!lease || lease.userId !== userId)
       throw new ApiProblem(409, 'not_lease_holder', 'You do not hold this lease');
@@ -331,6 +344,7 @@ export async function expireLeases(db: Db): Promise<number> {
       const [still] = await tx.select().from(leases).where(eq(leases.id, lease.id));
       if (!still || still.expiresAt.getTime() > Date.now()) return;
       await tx.delete(leases).where(eq(leases.id, lease.id));
+      if (request?.archivedAt) return;
       if (request && request.status === 'claimed') {
         await tx
           .update(reviewRequests)
@@ -352,6 +366,7 @@ export async function applySlaTimeouts(db: Db): Promise<number> {
     .where(
       and(
         inArray(reviewRequests.status, ['open', 'claimed']),
+        isNull(reviewRequests.archivedAt),
         lt(reviewRequests.slaDueAt, new Date())
       )
     );
@@ -363,7 +378,7 @@ export async function applySlaTimeouts(db: Db): Promise<number> {
         .from(reviewRequests)
         .where(eq(reviewRequests.id, req.id))
         .for('update');
-      if (!request || !['open', 'claimed'].includes(request.status)) return;
+      if (!request || request.archivedAt || !['open', 'claimed'].includes(request.status)) return;
       if (!request.slaDueAt || request.slaDueAt.getTime() > Date.now()) return;
       const policy = await getPolicyForRequest(tx, request.policyVersionId);
       const failOpen = policy.slaFailMode === 'fail_open';
