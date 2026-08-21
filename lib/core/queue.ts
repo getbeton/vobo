@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import { reviewRequests, leases, queues, projects } from '@/lib/db/schema';
 import { appendEvent, Db, DbOrTx } from './eventlog';
 import { ApiProblem, getPolicyForRequest } from './requests';
@@ -273,6 +273,65 @@ export async function archiveRequests(
     for (const id of input.requestIds) if (!found.has(id)) skipped.push(id);
     return { archived, skipped };
   });
+}
+
+/**
+ * Put archived requests back on the board.
+ *
+ * The exact reversal of `archiveRequests`. Archive never touched `status`, so
+ * unarchive does not either: an `open` request returns to the queue and a
+ * `rejected` one returns to the awaiting-version list, each exactly where it
+ * was. Anything else would silently discard a decision the pipeline may still
+ * be acting on.
+ *
+ * A request that is not archived is skipped, so a repeated call is safe.
+ */
+export async function unarchiveRequests(
+  db: Db,
+  input: { requestIds: string[]; userId: string; reason?: string }
+): Promise<{ unarchived: string[]; skipped: string[] }> {
+  if (input.requestIds.length === 0) return { unarchived: [], skipped: [] };
+  return db.transaction(async (tx) => {
+    const rows = await tx
+      .select()
+      .from(reviewRequests)
+      .where(inArray(reviewRequests.id, input.requestIds));
+
+    const unarchived: string[] = [];
+    const skipped: string[] = [];
+    const at = new Date();
+    for (const request of rows) {
+      if (!request.archivedAt) {
+        skipped.push(request.id);
+        continue;
+      }
+      await tx
+        .update(reviewRequests)
+        .set({ archivedAt: null, archivedBy: null, updatedAt: at })
+        .where(eq(reviewRequests.id, request.id));
+      await appendEvent(tx, request.id, 'request.unarchived', {
+        by: input.userId,
+        archived_by: request.archivedBy,
+        archived_at: request.archivedAt.toISOString(),
+        status_restored: request.status,
+        batch_size: input.requestIds.length,
+        reason: input.reason ?? null,
+      });
+      unarchived.push(request.id);
+    }
+    const found = new Set(rows.map((r) => r.id));
+    for (const id of input.requestIds) if (!found.has(id)) skipped.push(id);
+    return { unarchived, skipped };
+  });
+}
+
+/** Archived requests for one queue, newest first. The operator's undo list. */
+export async function archivedForQueue(db: DbOrTx, queueId: string) {
+  return db
+    .select()
+    .from(reviewRequests)
+    .where(and(eq(reviewRequests.queueId, queueId), isNotNull(reviewRequests.archivedAt)))
+    .orderBy(desc(reviewRequests.archivedAt), asc(reviewRequests.id));
 }
 
 export async function claim(db: Db, requestId: string, userId: string) {

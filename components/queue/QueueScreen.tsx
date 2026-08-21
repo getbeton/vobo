@@ -201,12 +201,15 @@ export function QueueScreen({
   nextUp,
   miss,
   canArchive = false,
+  archivedHref = '/queue/archived',
 }: {
   rows: QueueRowData[];
   nextUp: QueueRowData | null;
   miss: QueueMiss | null;
   /** Operator or admin. Reviewers never see the selection controls. */
   canArchive?: boolean;
+  /** Where the operator's undo list lives, with the current queue selected. */
+  archivedHref?: string;
 }) {
   const router = useRouter();
   const [focusIdx, setFocusIdx] = useState(0);
@@ -347,6 +350,19 @@ export function QueueScreen({
               </div>
             )}
           </span>
+          {canArchive && (
+            <Link
+              href={archivedHref}
+              style={{
+                marginLeft: 'auto',
+                fontSize: 12,
+                color: 'var(--blue-700)',
+                textDecoration: 'none',
+              }}
+            >
+              Archived
+            </Link>
+          )}
         </div>
 
         {error && (
@@ -512,9 +528,18 @@ export function QueueScreen({
               style={{ cursor: 'pointer', width: 15, height: 15 }}
             />
             {selected.size === 0 ? (
-              <span style={{ color: 'var(--slate-500)' }}>
-                Select requests to archive them. Shift-click picks a range.
-              </span>
+              <>
+                <span style={{ color: 'var(--slate-500)' }}>
+                  Select requests to archive them. Shift-click picks a range.
+                </span>
+                <div style={{ flex: 1 }} />
+                <Link
+                  href={archivedHref}
+                  style={{ fontSize: 12, color: 'var(--blue-700)', textDecoration: 'none' }}
+                >
+                  Archived
+                </Link>
+              </>
             ) : (
               <>
                 <span style={{ fontWeight: 500 }}>
@@ -715,6 +740,14 @@ export function QueueScreen({
             <span style={{ fontSize: 13, color: 'var(--slate-500)' }}>
               Nothing awaiting review in this queue · switch queues in the breadcrumb
             </span>
+            {canArchive && (
+              <Link
+                href={archivedHref}
+                style={{ fontSize: 12, color: 'var(--blue-700)', marginTop: 6 }}
+              >
+                Archived
+              </Link>
+            )}
           </div>
         )}
       </div>

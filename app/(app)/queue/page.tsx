@@ -47,6 +47,9 @@ export default async function QueuePage({
     return <QueueScreen rows={[]} nextUp={null} miss={miss} canArchive={canArchive} />;
   }
   const queue = resolved.queue;
+  const archivedHref = `/queue/archived?project=${encodeURIComponent(
+    resolved.project?.slug ?? ''
+  )}&queue=${encodeURIComponent(queue.slug)}&env=${environment}`;
 
   const ranked = await rankedQueue(db, queue.id, user.id);
 
@@ -98,5 +101,13 @@ export default async function QueuePage({
   const nextUp =
     rows.find((r) => r.status === 'open' || (r.lease?.mine ?? false)) ?? null;
 
-  return <QueueScreen rows={rows} nextUp={nextUp} miss={null} canArchive={canArchive} />;
+  return (
+    <QueueScreen
+      rows={rows}
+      nextUp={nextUp}
+      miss={null}
+      canArchive={canArchive}
+      archivedHref={archivedHref}
+    />
+  );
 }
