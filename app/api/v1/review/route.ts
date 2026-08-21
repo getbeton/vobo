@@ -45,6 +45,7 @@ export async function GET(req: Request) {
       round: request.round,
       title: request.title,
       accepted_hash: request.acceptedHash,
+      archived_at: request.archivedAt,
       policy_version_id: request.policyVersionId,
       versions,
       chain: { ok: verification.ok, length: rows.length, broken_at: verification.brokenAtSeq ?? null },

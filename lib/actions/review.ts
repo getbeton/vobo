@@ -5,7 +5,7 @@ import { db } from '@/lib/db/drizzle';
 import { getUser } from '@/lib/db/queries';
 import { ApiProblem } from '@/lib/core/requests';
 import { can, workspaceOfRequest } from '@/lib/core/authz';
-import { claim, release } from '@/lib/core/queue';
+import { archiveRequests, claim, release } from '@/lib/core/queue';
 import {
   addComment,
   editComment,
@@ -25,6 +25,18 @@ import {
 export type ActionResult<T = unknown> =
   | { ok: true; data?: T }
   | { ok: false; error: string; code: string };
+
+/**
+ * Archive is an operator action, not a reviewer one. It removes work from the
+ * board without a verdict, so it sits with the people who own the queue.
+ */
+async function guardOperator(requestId: string) {
+  const user = await getUser();
+  if (!user) throw new ApiProblem(401, 'unauthenticated', 'Sign in required');
+  const wsId = await workspaceOfRequest(requestId);
+  await can.operate(user.id, wsId);
+  return { user, wsId };
+}
 
 async function guardReviewer(requestId: string) {
   const user = await getUser();
@@ -96,6 +108,24 @@ export const setCriterionAction = wrap(
     const user = await guardReviewer(requestId);
     await setCriterionVerdict(db, { requestId, criterionId, userId: user.id, verdict });
     revalidatePath(`/review/${requestId}`);
+  }
+);
+
+export const archiveRequestsAction = wrap(
+  async (requestIds: string[], reason?: string) => {
+    if (requestIds.length === 0) throw new ApiProblem(422, 'nothing_selected', 'Select at least one request');
+    // Authorize against the first request's workspace, then refuse any id that
+    // resolves to a different one — a mixed batch must never ride in on one
+    // check.
+    const { user, wsId } = await guardOperator(requestIds[0]);
+    for (const id of requestIds.slice(1)) {
+      if ((await workspaceOfRequest(id)) !== wsId)
+        throw new ApiProblem(403, 'cross_workspace', 'The selection spans more than one workspace');
+    }
+    const res = await archiveRequests(db, { requestIds, userId: user.id, reason });
+    revalidatePath('/queue');
+    revalidatePath('/requests');
+    return res;
   }
 );
 

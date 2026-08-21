@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { and, eq, gt, inArray, max, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, max, sql } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
 import { reviewRequests, queues, events } from '@/lib/db/schema';
 import { authenticateApiKey, problemResponse } from '@/lib/core/apiauth';
@@ -77,7 +77,11 @@ export async function GET(req: Request) {
     const awaiting = url.searchParams.get('awaiting_version') === 'true';
     const changedSince = url.searchParams.get('changed_since');
 
+    // The work list hides archived rows so a pipeline does not wait on a
+    // verdict that will never come. A changed_since delta includes them with
+    // archived_at set, otherwise their request.archived events stall the cursor.
     const conditions = [eq(reviewRequests.projectId, principal.projectId)] as any[];
+    if (!changedSince) conditions.push(isNull(reviewRequests.archivedAt));
     if (queueSlug) {
       const queue = await db.query.queues.findFirst({
         where: and(
@@ -133,6 +137,7 @@ export async function GET(req: Request) {
         round: request.round,
         title: request.title,
         accepted_hash: request.acceptedHash,
+        archived_at: request.archivedAt,
         updated_at: request.updatedAt,
       })),
       max_event_id: batchMax,
