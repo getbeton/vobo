@@ -39,7 +39,7 @@ flowchart TD
 
 Sign up on [vobo.dev](https://vobo.dev/?utm_source=github&utm_medium=readme&utm_campaign=repo&utm_content=get-started).
 
-Free is 1 queue and 1 000 reviews a month. Paid is $0.10 per human review.
+Free is capped at 1 queue, 5 users and 1 000 reviews a month. Paid is $0.10 per human review and capped at 20 queues without seat or review caps. All integrations are free besides verbatim log drain (on the roadmap).
 
 The LLM judge is on the roadmap. It will be free on any plan when you bring your own key. Paid will also let you use our tokens, charged per review.
 
@@ -135,4 +135,5 @@ These projects run the station. Thank you.
 | [Vitest](https://vitest.dev) | Tests | [repo](https://github.com/vitest-dev/vitest) |
 | [approx-string-match](https://www.npmjs.com/package/approx-string-match) | Re-anchoring after a rewrite | [repo](https://github.com/robertknight/approx-string-match-js) |
 
-VOBO Oversees Bullshit Output
+---
+> _VOBO Oversees Bullshit Output. 2026-singularity._
