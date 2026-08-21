@@ -175,7 +175,10 @@ describe('archiveRequestsAction — authorization', () => {
   });
 
   it('refuses when the first id is the foreign one', async () => {
-    // Order must not decide the outcome.
+    // Order must not decide the outcome. The caller is an operator of the
+    // first id's workspace, so guardOperator succeeds and the loop is what
+    // must refuse. A local operator with foreign-first dies at not_a_member
+    // before requestIds.slice(1) and never proves the loop.
     const other = await createFixtures();
     const { request: foreign } = await createReview(db, {
       projectId: other.projectId,
@@ -185,11 +188,16 @@ describe('archiveRequestsAction — authorization', () => {
       title: 'Foreign first',
       contentMd: 'Body',
     });
-    currentUserId = await addMember(fixtures.workspaceId, 'operator');
+    currentUserId = await addMember(other.workspaceId, 'operator');
 
     const res = await archiveRequestsAction([foreign.id, ids[0]]);
     expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.code).toBe('cross_workspace');
     expect(await archivedCount()).toBe(0);
+    const localRow = await db.select().from(reviewRequests).where(eq(reviewRequests.id, ids[0]));
+    expect(localRow[0].archivedAt).toBeNull();
+    const foreignRow = await db.select().from(reviewRequests).where(eq(reviewRequests.id, foreign.id));
+    expect(foreignRow[0].archivedAt).toBeNull();
   });
 
   it('stamps the acting user, not the request author', async () => {
