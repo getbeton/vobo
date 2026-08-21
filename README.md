@@ -1,6 +1,4 @@
-# Vobo
-
-Human <ins>Review</ins> for AI ~~Slop~~ Output
+# Vobo – Human <ins>Review</ins> for AI ~~Slop~~ Output
 
 No matter what your AI does – text, image, sounds or video – Vobo helps you review its products before slop goes live.
 
