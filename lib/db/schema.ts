@@ -10,6 +10,7 @@ import {
   uuid,
   bigserial,
   jsonb,
+  real,
   uniqueIndex,
   index,
 } from 'drizzle-orm/pg-core';
@@ -24,6 +25,31 @@ export const workspaceRoleEnum = pgEnum('workspace_role', [
   'operator',
   'reviewer',
   'adjudicator', // reserved; no adjudication UI in MVP
+]);
+
+export const workspacePlanEnum = pgEnum('workspace_plan', [
+  'community',
+  'cloud_free',
+  'cloud_paid',
+  'enterprise',
+  'self_host',
+]);
+
+export const findingSeverityEnum = pgEnum('finding_severity', ['critical', 'minor']);
+
+export const findingTriageEnum = pgEnum('finding_triage', [
+  'untriaged',
+  'confirmed',
+  'dismissed',
+  'suppressed',
+]);
+
+export const judgeRunStateEnum = pgEnum('judge_run_state', [
+  'pending',
+  'running',
+  'completed',
+  'failed',
+  'not_sampled',
 ]);
 
 export const queueEnvironmentEnum = pgEnum('queue_environment', [
@@ -152,6 +178,9 @@ export const workspaces = pgTable('workspaces', {
   // Policy defaults inherited by projects/queues (zod-validated JSON; the one
   // deliberate settings column — see ARD §4 / Argilla pattern).
   policyDefaults: jsonb('policy_defaults').notNull().default({}),
+  // Structural tenancy for training/grounding (ARD §33.2): a plan switch, not
+  // a boolean flag. Enterprise and self-host cannot enter the training path.
+  plan: workspacePlanEnum('plan').notNull().default('cloud_paid'),
   createdAt: timestamp('created_at').notNull().defaultNow(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });
@@ -332,6 +361,12 @@ export const reviewRequests = pgTable(
     // operator failing-requests page. Not a status value — same reason as archive.
     budgetExhaustedAt: timestamp('budget_exhausted_at'),
     budgetExhaustedBy: text('budget_exhausted_by').references(() => user.id),
+    // Routing-confidence signal from the latest completed judge run. Never a
+    // verdict. Null until a run completes (or when the version was not sampled).
+    judgeOverallScore: real('judge_overall_score'),
+    // Stamped at creation from policy.judgeBlindSamplingPct. Immutable for the
+    // request: later policy edits do not flip blindness (ARD §26).
+    judgeBlind: boolean('judge_blind').notNull().default(false),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
   },
@@ -599,6 +634,173 @@ export const webhookDeliveries = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Machine findings, producers, judge runs (VOBO-30)
+// ---------------------------------------------------------------------------
+
+export const findingProducers = pgTable(
+  'finding_producers',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    projectId: uuid('project_id')
+      .notNull()
+      .references(() => projects.id),
+    name: varchar('name', { length: 100 }).notNull(),
+    slug: varchar('slug', { length: 64 }).notNull(),
+    builtin: boolean('builtin').notNull().default(false),
+    mutedAt: timestamp('muted_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('finding_producers_project_slug_uq').on(t.projectId, t.slug)]
+);
+
+export const producerKeys = pgTable(
+  'producer_keys',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    producerId: uuid('producer_id')
+      .notNull()
+      .references(() => findingProducers.id),
+    keyHash: text('key_hash').notNull().unique(),
+    keyPrefix: varchar('key_prefix', { length: 12 }).notNull(),
+    rateLimitPerMinute: integer('rate_limit_per_minute').notNull().default(600),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    lastUsedAt: timestamp('last_used_at'),
+    revokedAt: timestamp('revoked_at'),
+  },
+  (t) => [index('producer_keys_producer_idx').on(t.producerId)]
+);
+
+export const findingBatches = pgTable(
+  'finding_batches',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    versionId: uuid('version_id')
+      .notNull()
+      .references(() => artifactVersions.id),
+    producerId: uuid('producer_id')
+      .notNull()
+      .references(() => findingProducers.id),
+    idempotencyKey: varchar('idempotency_key', { length: 128 }).notNull(),
+    findingIds: jsonb('finding_ids').notNull().default([]),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('finding_batches_version_producer_key_uq').on(
+      t.versionId,
+      t.producerId,
+      t.idempotencyKey
+    ),
+  ]
+);
+
+export const machineFindings = pgTable(
+  'machine_findings',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => reviewRequests.id),
+    versionId: uuid('version_id')
+      .notNull()
+      .references(() => artifactVersions.id),
+    producerId: uuid('producer_id')
+      .notNull()
+      .references(() => findingProducers.id),
+    judgeRunId: uuid('judge_run_id'),
+    criterionKey: varchar('criterion_key', { length: 64 }).notNull(),
+    severity: findingSeverityEnum('severity').notNull().default('minor'),
+    quote: text('quote').notNull(),
+    prefix: text('prefix').notNull().default(''),
+    suffix: text('suffix').notNull().default(''),
+    startPos: integer('start_pos').notNull(),
+    endPos: integer('end_pos').notNull(),
+    structuralContainer: varchar('structural_container', { length: 255 }),
+    structuralBlockId: varchar('structural_block_id', { length: 255 }),
+    structuralOrdinal: integer('structural_ordinal'),
+    evidence: text('evidence').notNull(),
+    note: text('note').notNull(),
+    fingerprint: varchar('fingerprint', { length: 64 }).notNull(),
+    triage: findingTriageEnum('triage').notNull().default('untriaged'),
+    dismissalReason: text('dismissal_reason'),
+    dismissedBy: text('dismissed_by').references(() => user.id),
+    dismissedAt: timestamp('dismissed_at'),
+    confirmedAnnotationId: uuid('confirmed_annotation_id').references(() => annotations.id),
+    confirmedBy: text('confirmed_by').references(() => user.id),
+    confirmedAt: timestamp('confirmed_at'),
+    purgedAt: timestamp('purged_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    index('machine_findings_request_idx').on(t.requestId),
+    index('machine_findings_version_idx').on(t.versionId),
+    index('machine_findings_fingerprint_idx').on(t.requestId, t.fingerprint),
+  ]
+);
+
+export const dismissalMemory = pgTable(
+  'dismissal_memory',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => reviewRequests.id),
+    fingerprint: varchar('fingerprint', { length: 64 }).notNull(),
+    reason: text('reason').notNull(),
+    dismissedBy: text('dismissed_by').references(() => user.id),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('dismissal_memory_request_fp_uq').on(t.requestId, t.fingerprint)]
+);
+
+export const judgeRuns = pgTable(
+  'judge_runs',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => reviewRequests.id),
+    versionId: uuid('version_id')
+      .notNull()
+      .references(() => artifactVersions.id),
+    policyVersionId: uuid('policy_version_id')
+      .notNull()
+      .references(() => policyVersions.id),
+    state: judgeRunStateEnum('state').notNull().default('pending'),
+    overallScore: real('overall_score'),
+    errorClass: varchar('error_class', { length: 64 }),
+    errorMessage: text('error_message'),
+    attempts: integer('attempts').notNull().default(0),
+    lastAttemptAt: timestamp('last_attempt_at'),
+    startedAt: timestamp('started_at'),
+    completedAt: timestamp('completed_at'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('judge_runs_version_uq').on(t.versionId)]
+);
+
+export const judgeRecords = pgTable(
+  'judge_records',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    workspaceId: integer('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => reviewRequests.id),
+    versionId: uuid('version_id')
+      .notNull()
+      .references(() => artifactVersions.id),
+    runId: uuid('run_id').references(() => judgeRuns.id),
+    // Append-only per-workspace log (VOBO-198). Reviewer identity is hashed
+    // at the boundary; raw user ids never land here (VOBO-201).
+    payload: jsonb('payload').notNull(),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (t) => [index('judge_records_workspace_idx').on(t.workspaceId, t.id)]
+);
+
+// ---------------------------------------------------------------------------
 // Leases (atomic claims)
 // ---------------------------------------------------------------------------
 
@@ -732,6 +934,73 @@ export const activityLogsRelations = relations(activityLogs, ({ one }) => ({
   user: one(user, { fields: [activityLogs.userId], references: [user.id] }),
 }));
 
+export const policyVersionsRelations = relations(policyVersions, ({ one }) => ({
+  queue: one(queues, { fields: [policyVersions.queueId], references: [queues.id] }),
+}));
+
+export const findingProducersRelations = relations(findingProducers, ({ one, many }) => ({
+  project: one(projects, { fields: [findingProducers.projectId], references: [projects.id] }),
+  keys: many(producerKeys),
+}));
+
+export const producerKeysRelations = relations(producerKeys, ({ one }) => ({
+  producer: one(findingProducers, {
+    fields: [producerKeys.producerId],
+    references: [findingProducers.id],
+  }),
+}));
+
+export const findingBatchesRelations = relations(findingBatches, ({ one }) => ({
+  version: one(artifactVersions, {
+    fields: [findingBatches.versionId],
+    references: [artifactVersions.id],
+  }),
+  producer: one(findingProducers, {
+    fields: [findingBatches.producerId],
+    references: [findingProducers.id],
+  }),
+}));
+
+export const machineFindingsRelations = relations(machineFindings, ({ one }) => ({
+  request: one(reviewRequests, {
+    fields: [machineFindings.requestId],
+    references: [reviewRequests.id],
+  }),
+  version: one(artifactVersions, {
+    fields: [machineFindings.versionId],
+    references: [artifactVersions.id],
+  }),
+  producer: one(findingProducers, {
+    fields: [machineFindings.producerId],
+    references: [findingProducers.id],
+  }),
+}));
+
+export const dismissalMemoryRelations = relations(dismissalMemory, ({ one }) => ({
+  request: one(reviewRequests, {
+    fields: [dismissalMemory.requestId],
+    references: [reviewRequests.id],
+  }),
+}));
+
+export const judgeRunsRelations = relations(judgeRuns, ({ one }) => ({
+  request: one(reviewRequests, {
+    fields: [judgeRuns.requestId],
+    references: [reviewRequests.id],
+  }),
+  version: one(artifactVersions, {
+    fields: [judgeRuns.versionId],
+    references: [artifactVersions.id],
+  }),
+}));
+
+export const judgeRecordsRelations = relations(judgeRecords, ({ one }) => ({
+  workspace: one(workspaces, {
+    fields: [judgeRecords.workspaceId],
+    references: [workspaces.id],
+  }),
+}));
+
 // ---------------------------------------------------------------------------
 // Inferred types
 // ---------------------------------------------------------------------------
@@ -759,6 +1028,12 @@ export type EventRow = typeof events.$inferSelect;
 export type WebhookEndpoint = typeof webhookEndpoints.$inferSelect;
 export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
 export type Lease = typeof leases.$inferSelect;
+export type FindingProducer = typeof findingProducers.$inferSelect;
+export type ProducerKey = typeof producerKeys.$inferSelect;
+export type MachineFinding = typeof machineFindings.$inferSelect;
+export type JudgeRun = typeof judgeRuns.$inferSelect;
+export type JudgeRecord = typeof judgeRecords.$inferSelect;
+export type DismissalMemory = typeof dismissalMemory.$inferSelect;
 
 export type WorkspaceDataWithMembers = Workspace & {
   members: (WorkspaceMember & {
