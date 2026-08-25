@@ -13,6 +13,7 @@ import {
 import { appendEvent, Db, DbOrTx } from './eventlog';
 import { ApiProblem, getPolicyForRequest } from './requests';
 import { contentHash } from './events';
+import { untriagedFindings } from '@/lib/findings/read';
 
 /**
  * Verdict state machine. Semantics are NORMATIVE from the design prototype's
@@ -161,6 +162,8 @@ export interface ShipInput {
   acknowledgeInterstitials?: boolean;
   /** For approve_edited: the human-corrected artifact content. */
   editedContentMd?: string;
+  /** Ship despite untriaged machine findings. Recorded on the signed event. */
+  overrideUntriagedFindings?: boolean;
 }
 
 export async function ship(db: Db, input: ShipInput) {
@@ -177,6 +180,15 @@ export async function ship(db: Db, input: ShipInput) {
 
     const { request, version } = await loadContext(tx, input.requestId);
     const policy = await getPolicyForRequest(tx, request.policyVersionId);
+
+    const untriaged = await untriagedFindings(tx, request.id, version.id);
+    if (untriaged.length > 0 && !input.overrideUntriagedFindings) {
+      throw new ApiProblem(
+        422,
+        'untriaged_findings',
+        `${untriaged.length} untriaged machine finding(s) — confirm, dismiss, or override`
+      );
+    }
 
     if (input.kind === 'escalate') {
       if (!input.reason || input.reason.trim().length < 4)
@@ -279,6 +291,8 @@ export async function ship(db: Db, input: ShipInput) {
       policy_version_id: request.policyVersionId,
       criteria: criteriaRows,
       was_edited: input.kind === 'approve_edited',
+      untriaged_override: Boolean(input.overrideUntriagedFindings),
+      untriaged_finding_ids: untriaged.map((f) => f.id),
     };
 
     let newStatus: 'accepted' | 'rejected' | 'escalated';
