@@ -21,6 +21,8 @@ vi.mock('@/lib/actions/review', () => ({
   editCommentAction: (...args: unknown[]) => editComment(...(args as [])),
   resolveCommentAction: (...args: unknown[]) => resolveComment(...(args as [])),
   setCriterionAction: async () => ({ ok: true }),
+  confirmFindingAction: async () => ({ ok: true }),
+  dismissFindingAction: async () => ({ ok: true }),
   shipAction: async () => ({ ok: true }),
   gateAction: async () => ({ ok: true, data: { blocked: false, reasons: [], interstitials: [] } }),
 }));

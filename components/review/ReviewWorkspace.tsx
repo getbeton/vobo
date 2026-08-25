@@ -7,6 +7,8 @@ import { FileText } from 'lucide-react';
 import {
   addCommentAction,
   claimAction,
+  confirmFindingAction,
+  dismissFindingAction,
   editCommentAction,
   resolveCommentAction,
   setCriterionAction,
@@ -49,6 +51,26 @@ export interface CriterionData {
   title: string;
   description: string | null;
   verdict: 'pass' | 'fail' | 'na' | null;
+}
+
+export interface MachineFindingData {
+  id: string;
+  criterionKey: string;
+  severity: 'critical' | 'minor';
+  quote: string;
+  startPos: number;
+  endPos: number;
+  evidence: string;
+  note: string;
+  triage: string;
+}
+
+export interface MachineReviewData {
+  withheld: boolean;
+  pending: boolean;
+  failed: boolean;
+  overallScore: number | null;
+  findings: MachineFindingData[];
 }
 
 interface RequestData {
@@ -101,6 +123,7 @@ export function ReviewWorkspace({
   annotations,
   criteria,
   files,
+  machineReview = null,
 }: {
   request: RequestData;
   contentMd: string;
@@ -108,6 +131,7 @@ export function ReviewWorkspace({
   annotations: AnnotationData[];
   criteria: CriterionData[];
   files: Array<{ name: string; kind: string }>;
+  machineReview?: MachineReviewData | null;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -126,6 +150,8 @@ export function ReviewWorkspace({
   const [error, setError] = useState<string | null>(null);
   const [shipping, setShipping] = useState(false);
   const [ackNeeded, setAckNeeded] = useState(false);
+  const [dismissReason, setDismissReason] = useState('');
+  const [findingFocus, setFindingFocus] = useState<string | null>(null);
   const editRef = useRef<HTMLDivElement>(null);
   const artifactRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -422,11 +448,44 @@ export function ReviewWorkspace({
   const compareAvailable = request.round > 1;
   const budgetReached = request.round >= request.roundBudget;
   const rejectBlocked = request.budgetExhausted;
-  // The judge does not exist yet (VOBO-176, VOBO-198). The empty state links to
-  // the queue rather than to a settings screen that could not configure one.
   const queueHref = `/admin/queues/${encodeURIComponent(request.queueSlug)}?project=${encodeURIComponent(
     request.projectSlug
   )}`;
+
+  const untriagedFindings = (machineReview?.findings ?? []).filter((f) => f.triage === 'untriaged');
+  const scoreLabel =
+    machineReview?.withheld
+      ? 'hidden'
+      : machineReview?.pending
+        ? 'pending'
+        : machineReview?.failed
+          ? 'failed'
+          : machineReview?.overallScore != null
+            ? machineReview.overallScore.toFixed(2)
+            : '—';
+
+  const confirmFinding = (id: string) => {
+    startTransition(async () => {
+      const res = await confirmFindingAction(request.id, id);
+      if (!res.ok) setError(res.error);
+      else router.refresh();
+    });
+  };
+  const dismissFinding = (id: string) => {
+    const reason = dismissReason.trim();
+    if (!reason) {
+      setError('A dismiss reason is required');
+      return;
+    }
+    startTransition(async () => {
+      const res = await dismissFindingAction(request.id, id, reason);
+      if (!res.ok) setError(res.error);
+      else {
+        setDismissReason('');
+        router.refresh();
+      }
+    });
+  };
 
   mainVerdictRef.current = () => {
     if (shippingRef.current) return;
@@ -936,29 +995,121 @@ export function ReviewWorkspace({
                   style={{ fontSize: 12, color: 'var(--slate-500)' }}
                   title="The judge score stands in for model confidence in routing. It is never a verdict."
                 >
-                  —
+                  {scoreLabel}
                 </span>
               </div>
-              <div
-                style={{
-                  border: '1px solid var(--border)',
-                  borderRadius: 8,
-                  padding: 12,
-                  fontSize: 12,
-                  color: 'var(--slate-500)',
-                  lineHeight: 1.5,
-                }}
-              >
-                No machine review on this version. The judge does not run yet — no queue can turn
-                one on.{' '}
-                <Link
-                  href={queueHref}
-                  style={{ color: 'var(--blue-700)', textDecoration: 'none', fontWeight: 500 }}
+              {machineReview?.withheld ? (
+                <div
+                  style={{
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    padding: 12,
+                    fontSize: 12,
+                    color: 'var(--slate-500)',
+                    lineHeight: 1.5,
+                  }}
                 >
-                  Open the queue page
-                </Link>{' '}
-                for the policy that governs this review.
-              </div>
+                  Machine review not shown for this item.
+                </div>
+              ) : machineReview?.pending ? (
+                <div
+                  style={{
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    padding: 12,
+                    fontSize: 12,
+                    color: 'var(--slate-500)',
+                  }}
+                >
+                  Judge run pending.
+                </div>
+              ) : untriagedFindings.length === 0 && !(machineReview?.findings.length) ? (
+                <div
+                  style={{
+                    border: '1px solid var(--border)',
+                    borderRadius: 8,
+                    padding: 12,
+                    fontSize: 12,
+                    color: 'var(--slate-500)',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  No machine findings on this version.{' '}
+                  <Link href={queueHref} style={{ color: 'var(--blue-700)', textDecoration: 'none', fontWeight: 500 }}>
+                    Open the queue page
+                  </Link>{' '}
+                  to configure the judge.
+                </div>
+              ) : (
+                <>
+                  {untriagedFindings.map((f) => (
+                    <div
+                      key={f.id}
+                      data-finding-id={f.id}
+                      style={{
+                        border: '1px solid var(--border)',
+                        borderRadius: 8,
+                        padding: 10,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                        background: findingFocus === f.id ? 'var(--slate-50)' : '#fff',
+                      }}
+                    >
+                      <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
+                        <span style={{ fontSize: 11, color: 'var(--slate-500)' }}>{f.criterionKey}</span>
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            color: f.severity === 'critical' ? 'var(--red-700)' : 'var(--slate-600)',
+                          }}
+                        >
+                          {f.severity}
+                        </span>
+                      </div>
+                      <span style={{ fontSize: 13, color: 'var(--slate-800)' }}>{f.note}</span>
+                      <span style={{ fontSize: 12, color: 'var(--slate-500)', fontFamily: 'ui-monospace, monospace' }}>
+                        “{f.quote}”
+                      </span>
+                      <div style={{ display: 'flex', gap: 6 }}>
+                        <button
+                          type="button"
+                          className="ds-btn ds-btn--outline ds-btn--sm"
+                          onClick={() => confirmFinding(f.id)}
+                          title="Confirm C"
+                        >
+                          Confirm
+                        </button>
+                        <button
+                          type="button"
+                          className="ds-btn ds-btn--outline ds-btn--sm"
+                          onClick={() => {
+                            setFindingFocus(f.id);
+                            dismissFinding(f.id);
+                          }}
+                          title="Dismiss D"
+                        >
+                          Dismiss
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                  {untriagedFindings.length > 0 && (
+                    <input
+                      value={dismissReason}
+                      onChange={(e) => setDismissReason(e.target.value)}
+                      placeholder="Dismiss reason (required)"
+                      style={{
+                        fontSize: 12,
+                        padding: '6px 8px',
+                        border: '1px solid var(--border)',
+                        borderRadius: 6,
+                      }}
+                    />
+                  )}
+                </>
+              )}
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0 4px' }}>
                 <span style={sectionHead}>Criteria</span>

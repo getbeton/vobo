@@ -18,6 +18,7 @@ import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
 import { NoAccess } from '@/components/shell/NoAccess';
 import { parsePolicyConfig } from '@/lib/core/policy';
 import { ReviewWorkspace } from '@/components/review/ReviewWorkspace';
+import { readFindings } from '@/lib/findings/read';
 
 export const dynamic = 'force-dynamic';
 
@@ -76,6 +77,12 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
   });
   const policy = pv ? parsePolicyConfig(pv.config) : null;
 
+  const machine = await readFindings(db, {
+    requestId: request.id,
+    versionId: version.id,
+    audience: 'reviewer',
+  });
+
   return (
     <ReviewWorkspace
       request={{
@@ -112,6 +119,25 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
         verdict: verdicts.find((v) => v.criterionId === c.id)?.verdict ?? null,
       }))}
       files={files.map((f) => ({ name: f.name, kind: f.contentType ?? 'file' }))}
+      machineReview={{
+        withheld: machine.withheld,
+        pending: machine.run?.state === 'pending' || machine.run?.state === 'running',
+        failed: machine.run?.state === 'failed',
+        overallScore: machine.run?.overallScore ?? request.judgeOverallScore ?? null,
+        findings: machine.withheld
+          ? []
+          : machine.findings.map((f) => ({
+              id: f.id,
+              criterionKey: f.criterionKey,
+              severity: f.severity,
+              quote: f.quote,
+              startPos: f.startPos,
+              endPos: f.endPos,
+              evidence: f.evidence,
+              note: f.note,
+              triage: f.triage,
+            })),
+      }}
     />
   );
 }
