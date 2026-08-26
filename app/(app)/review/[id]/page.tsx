@@ -1,5 +1,5 @@
 import { notFound, redirect } from 'next/navigation';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
 import { getUser } from '@/lib/db/queries';
 import {
@@ -13,6 +13,7 @@ import {
   contextFiles,
   queues,
   projects,
+  judgeRecords,
 } from '@/lib/db/schema';
 import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
 import { NoAccess } from '@/components/shell/NoAccess';
@@ -83,6 +84,21 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
     audience: 'reviewer',
   });
 
+  const [latestRecord] = await db
+    .select()
+    .from(judgeRecords)
+    .where(eq(judgeRecords.versionId, version.id))
+    .orderBy(desc(judgeRecords.id))
+    .limit(1);
+  const recordScores = (
+    latestRecord?.payload as { scores?: Array<{ criterion?: string; score?: number }> } | null
+  )?.scores;
+  const scoreByKey = Object.fromEntries(
+    (recordScores ?? [])
+      .filter((s) => typeof s.criterion === 'string' && typeof s.score === 'number')
+      .map((s) => [s.criterion as string, s.score as number])
+  );
+
   return (
     <ReviewWorkspace
       request={{
@@ -123,6 +139,11 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
               ? ('pass' as const)
               : ('fail' as const)
             : null;
+        const columnScore =
+          machineRow && 'score' in machineRow && machineRow.score != null
+            ? Number(machineRow.score)
+            : null;
+        const score = machine.withheld ? null : (columnScore ?? scoreByKey[c.key] ?? null);
         return {
           id: c.id,
           key: c.key,
@@ -130,6 +151,16 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
           description: c.description,
           verdict: human ?? machineVerdict,
           source: human ? ('human' as const) : machineVerdict ? ('machine' as const) : null,
+          score,
+          finding:
+            machineRow && !machine.withheld
+              ? {
+                  startPos: machineRow.startPos,
+                  endPos: machineRow.endPos,
+                  passed: 'passed' in machineRow ? Boolean(machineRow.passed) : false,
+                  note: machineRow.note,
+                }
+              : null,
         };
       })}
       files={files.map((f) => ({ name: f.name, kind: f.contentType ?? 'file' }))}
@@ -138,20 +169,6 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
         pending: machine.run?.state === 'pending' || machine.run?.state === 'running',
         failed: machine.run?.state === 'failed',
         overallScore: machine.run?.overallScore ?? request.judgeOverallScore ?? null,
-        findings: machine.withheld
-          ? []
-          : machine.findings.map((f) => ({
-              id: f.id,
-              criterionKey: f.criterionKey,
-              severity: f.severity,
-              quote: f.quote,
-              startPos: f.startPos,
-              endPos: f.endPos,
-              evidence: f.evidence,
-              note: f.note,
-              triage: f.triage,
-              passed: 'passed' in f ? Boolean(f.passed) : false,
-            })),
       }}
     />
   );
