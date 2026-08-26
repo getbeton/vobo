@@ -114,12 +114,12 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
       }))}
       criteria={crits.map((c) => {
         const human = verdicts.find((v) => v.criterionId === c.id)?.verdict ?? null;
-        const machine = machine.withheld
+        const machineRow = machine.withheld
           ? undefined
           : machine.findings.find((f) => f.criterionKey === c.key);
         const machineVerdict =
-          machine && 'passed' in machine
-            ? machine.passed
+          machineRow && 'passed' in machineRow
+            ? machineRow.passed
               ? ('pass' as const)
               : ('fail' as const)
             : null;
