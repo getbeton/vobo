@@ -92,7 +92,18 @@ export const autoevalsScorer: JudgeScorer = async (input: ScorerInput) => {
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      throw new Error(scrub(message, input.apiKey));
+      const scrubbed = scrub(message, input.apiKey);
+      if (/unknown score choice/i.test(scrubbed)) {
+        out.push({
+          criterionKey: criterion.key,
+          score: 0,
+          passed: false,
+          quote: null,
+          note: 'Scorer returned no PASS/FAIL choice.',
+        });
+        continue;
+      }
+      throw new Error(scrubbed);
     }
   }
   return out;

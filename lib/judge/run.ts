@@ -143,14 +143,14 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
     let dropped = 0;
     for (const s of scores) {
       if (s.passed) continue;
-      if (!s.quote) {
-        dropped += 1;
-        continue;
-      }
-      const loc = locateQuote(version.contentMd, s.quote);
+      let loc = s.quote ? locateQuote(version.contentMd, s.quote) : null;
       if (!loc) {
         dropped += 1;
-        continue;
+        const line =
+          version.contentMd.split('\n').find((l) => l.trim().length > 0) ??
+          version.contentMd.slice(0, Math.min(80, version.contentMd.length));
+        const start = Math.max(0, version.contentMd.indexOf(line));
+        loc = { startPos: start, endPos: start + line.length };
       }
       const actual = version.contentMd.slice(loc.startPos, loc.endPos);
       findings.push({

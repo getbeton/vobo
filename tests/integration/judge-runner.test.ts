@@ -89,7 +89,7 @@ describe('VOBO-51 judge runner', () => {
     expect(updated?.judgeOverallScore).toBeTypeOf('number');
   });
 
-  it('drops a hallucinated quote instead of posting it unanchored', async () => {
+  it('pins a hallucinated quote to the first line instead of dropping the finding', async () => {
     const hallucinating: JudgeScorer = async ({ criteria }) =>
       criteria.map((c) => ({
         criterionKey: c.key,
@@ -116,7 +116,9 @@ describe('VOBO-51 judge runner', () => {
       .select()
       .from(machineFindings)
       .where(eq(machineFindings.requestId, request.id));
-    expect(findings.filter((f) => f.criterionKey !== 'pii')).toHaveLength(0);
+    const voice = findings.filter((f) => f.criterionKey === 'voice');
+    expect(voice.length).toBeGreaterThan(0);
+    expect(BODY.startsWith(voice[0].quote) || BODY.includes(voice[0].quote)).toBe(true);
   });
 
   it('does not enqueue a run when the judge is off', async () => {
