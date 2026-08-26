@@ -66,12 +66,16 @@ describe('VOBO-48 MachineFinding contract', () => {
           selector: { quote },
           evidence: quote,
           note: 'Apology opener is banned.',
+          passed: false,
+          score: 0.12,
         },
       ],
     });
     expect(first.replayed).toBe(false);
     expect(first.findings[0].triage).toBe('untriaged');
     expect(first.findings[0].startPos).toBe(BODY.indexOf(quote));
+    expect(first.findings[0].passed).toBe(false);
+    expect(first.findings[0].score).toBe(0.12);
 
     const again = await ingestFindings(db, {
       requestId: request.id,

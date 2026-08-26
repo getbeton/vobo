@@ -155,6 +155,7 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
       findings.push({
         criterion: s.criterionKey,
         passed: s.passed,
+        score: s.score,
         severity: s.passed ? ('minor' as const) : ('minor' as const),
         selector: { quote: actual, start: loc.startPos, end: loc.endPos },
         evidence: actual,

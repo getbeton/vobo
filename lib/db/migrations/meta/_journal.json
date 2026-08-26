@@ -43,6 +43,13 @@
       "when": 1787900000000,
       "tag": "0005_judge_passed",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788000000000,
+      "tag": "0006_judge_score",
+      "breakpoints": true
     }
   ]
 }

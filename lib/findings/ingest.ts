@@ -14,6 +14,8 @@ export interface IncomingFinding {
   criterion: string;
   /** Judge boolean for this criterion. Default false (a defect). */
   passed?: boolean;
+  /** 0–1 confidence that this criterion passed. */
+  score?: number | null;
   severity?: 'critical' | 'minor';
   selector: {
     quote: string;
@@ -151,6 +153,10 @@ export async function ingestFindings(db: Db, input: IngestInput) {
           note: item.incoming.note,
           fingerprint: item.fingerprint,
           passed: item.incoming.passed ?? false,
+          score:
+            typeof item.incoming.score === 'number' && Number.isFinite(item.incoming.score)
+              ? Math.min(1, Math.max(0, item.incoming.score))
+              : null,
           triage,
         })
         .returning();

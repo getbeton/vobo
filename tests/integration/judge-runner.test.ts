@@ -83,8 +83,10 @@ describe('VOBO-51 judge runner', () => {
     expect(judged.length).toBeGreaterThanOrEqual(2);
     const voice = judged.find((f) => f.criterionKey === 'voice');
     expect(voice?.passed).toBe(false);
+    expect(voice?.score).toBe(0);
     const other = judged.find((f) => f.criterionKey !== 'voice');
     expect(other?.passed).toBe(true);
+    expect(other?.score).toBe(1);
 
     const updated = await db.query.reviewRequests.findFirst({
       where: eq(reviewRequests.id, request.id),

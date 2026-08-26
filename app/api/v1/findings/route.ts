@@ -18,6 +18,7 @@ import { ApiProblem } from '@/lib/core/requests';
 const findingSchema = z.object({
   criterion: z.string().min(1).max(64),
   passed: z.boolean().optional(),
+  score: z.number().min(0).max(1).optional(),
   severity: z.enum(['critical', 'minor']).optional(),
   selector: z.object({
     quote: z.string().min(1),

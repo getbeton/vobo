@@ -18,6 +18,7 @@ const REVIEWER_FINDING_FIELDS = [
   'note',
   'triage',
   'passed',
+  'score',
   'createdAt',
 ] as const;
 
