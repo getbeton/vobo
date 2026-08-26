@@ -142,7 +142,6 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
     const findings = [];
     let dropped = 0;
     for (const s of scores) {
-      if (s.passed) continue;
       let loc = s.quote ? locateQuote(version.contentMd, s.quote) : null;
       if (!loc) {
         dropped += 1;
@@ -155,7 +154,8 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
       const actual = version.contentMd.slice(loc.startPos, loc.endPos);
       findings.push({
         criterion: s.criterionKey,
-        severity: 'minor' as const,
+        passed: s.passed,
+        severity: s.passed ? ('minor' as const) : ('minor' as const),
         selector: { quote: actual, start: loc.startPos, end: loc.endPos },
         evidence: actual,
         note: s.note,

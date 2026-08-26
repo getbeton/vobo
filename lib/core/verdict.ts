@@ -9,6 +9,7 @@ import {
   decisions,
   leases,
   repinHistory,
+  machineFindings,
 } from '@/lib/db/schema';
 import { appendEvent, Db, DbOrTx } from './eventlog';
 import { ApiProblem, getPolicyForRequest } from './requests';
@@ -84,7 +85,15 @@ export async function approveGate(
     .select()
     .from(criteriaVerdicts)
     .where(and(eq(criteriaVerdicts.versionId, version.id), eq(criteriaVerdicts.userId, userId)));
-  const unscored = activeCriteria.length - scored.length;
+  const machineRows = await tx
+    .select({ key: machineFindings.criterionKey })
+    .from(machineFindings)
+    .where(eq(machineFindings.versionId, version.id));
+  const humanIds = new Set(scored.map((s) => s.criterionId));
+  const machineKeys = new Set(machineRows.map((m) => m.key));
+  const unscored = activeCriteria.filter(
+    (c) => !humanIds.has(c.id) && !machineKeys.has(c.key)
+  ).length;
   if (unscored > 0) {
     reasons.push(`Score all criteria to proceed — ${unscored} left`);
   }
@@ -182,13 +191,6 @@ export async function ship(db: Db, input: ShipInput) {
     const policy = await getPolicyForRequest(tx, request.policyVersionId);
 
     const untriaged = await untriagedFindings(tx, request.id, version.id);
-    if (untriaged.length > 0 && !input.overrideUntriagedFindings) {
-      throw new ApiProblem(
-        422,
-        'untriaged_findings',
-        `${untriaged.length} untriaged machine finding(s) — confirm, dismiss, or override`
-      );
-    }
 
     if (input.kind === 'escalate') {
       if (!input.reason || input.reason.trim().length < 4)

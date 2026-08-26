@@ -17,6 +17,7 @@ const REVIEWER_FINDING_FIELDS = [
   'evidence',
   'note',
   'triage',
+  'passed',
   'createdAt',
 ] as const;
 

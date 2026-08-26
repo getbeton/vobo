@@ -112,12 +112,26 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
         state: state?.state ?? (ann.bornRound === request.round ? 'new' : null),
         confirmation: state?.confirmation ?? null,
       }))}
-      criteria={crits.map((c) => ({
-        id: c.id,
-        title: c.title,
-        description: c.description,
-        verdict: verdicts.find((v) => v.criterionId === c.id)?.verdict ?? null,
-      }))}
+      criteria={crits.map((c) => {
+        const human = verdicts.find((v) => v.criterionId === c.id)?.verdict ?? null;
+        const machine = machine.withheld
+          ? undefined
+          : machine.findings.find((f) => f.criterionKey === c.key);
+        const machineVerdict =
+          machine && 'passed' in machine
+            ? machine.passed
+              ? ('pass' as const)
+              : ('fail' as const)
+            : null;
+        return {
+          id: c.id,
+          key: c.key,
+          title: c.title,
+          description: c.description,
+          verdict: human ?? machineVerdict,
+          source: human ? ('human' as const) : machineVerdict ? ('machine' as const) : null,
+        };
+      })}
       files={files.map((f) => ({ name: f.name, kind: f.contentType ?? 'file' }))}
       machineReview={{
         withheld: machine.withheld,
@@ -136,6 +150,7 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
               evidence: f.evidence,
               note: f.note,
               triage: f.triage,
+              passed: 'passed' in f ? Boolean(f.passed) : false,
             })),
       }}
     />

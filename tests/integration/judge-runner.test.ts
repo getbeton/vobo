@@ -59,7 +59,7 @@ describe('VOBO-51 judge runner', () => {
     expect(run?.state).toBe('pending');
   });
 
-  it('emits findings only for failing criteria with a locatable quote', async () => {
+  it('emits a boolean finding for every criterion', async () => {
     const { request } = await createReview(db, {
       projectId: fx.projectId,
       queueSlug: 'q',
@@ -79,9 +79,12 @@ describe('VOBO-51 judge runner', () => {
       .select()
       .from(machineFindings)
       .where(eq(machineFindings.requestId, request.id));
-    const voice = findings.filter((f) => f.criterionKey === 'voice');
-    expect(voice).toHaveLength(1);
-    expect(BODY.toLowerCase()).toContain(voice[0].quote.toLowerCase());
+    const judged = findings.filter((f) => f.criterionKey !== 'pii');
+    expect(judged.length).toBeGreaterThanOrEqual(2);
+    const voice = judged.find((f) => f.criterionKey === 'voice');
+    expect(voice?.passed).toBe(false);
+    const other = judged.find((f) => f.criterionKey !== 'voice');
+    expect(other?.passed).toBe(true);
 
     const updated = await db.query.reviewRequests.findFirst({
       where: eq(reviewRequests.id, request.id),

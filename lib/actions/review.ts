@@ -119,14 +119,15 @@ export const confirmFindingAction = wrap(async (requestId: string, findingId: st
   const user = await guardReviewer(requestId);
   const res = await confirmFinding(db, { findingId, userId: user.id });
   revalidatePath(`/review/${requestId}`);
-  return { annotationId: res.annotation.id };
+  return { verdict: res.verdict };
 });
 
 export const dismissFindingAction = wrap(
-  async (requestId: string, findingId: string, reason: string) => {
+  async (requestId: string, findingId: string, reason?: string) => {
     const user = await guardReviewer(requestId);
-    await dismissFinding(db, { findingId, userId: user.id, reason });
+    const res = await dismissFinding(db, { findingId, userId: user.id, reason });
     revalidatePath(`/review/${requestId}`);
+    return { verdict: res.verdict };
   }
 );
 

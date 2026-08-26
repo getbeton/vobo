@@ -12,6 +12,8 @@ import { findingFingerprint, quoteContext } from './fingerprint';
 
 export interface IncomingFinding {
   criterion: string;
+  /** Judge boolean for this criterion. Default false (a defect). */
+  passed?: boolean;
   severity?: 'critical' | 'minor';
   selector: {
     quote: string;
@@ -148,6 +150,7 @@ export async function ingestFindings(db: Db, input: IngestInput) {
           evidence: item.incoming.evidence,
           note: item.incoming.note,
           fingerprint: item.fingerprint,
+          passed: item.incoming.passed ?? false,
           triage,
         })
         .returning();

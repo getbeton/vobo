@@ -720,6 +720,8 @@ export const machineFindings = pgTable(
     evidence: text('evidence').notNull(),
     note: text('note').notNull(),
     fingerprint: varchar('fingerprint', { length: 64 }).notNull(),
+    /** Per-criterion boolean from the judge. Humans override via Confirm/Decline. */
+    passed: boolean('passed').notNull().default(false),
     triage: findingTriageEnum('triage').notNull().default('untriaged'),
     dismissalReason: text('dismissal_reason'),
     dismissedBy: text('dismissed_by').references(() => user.id),

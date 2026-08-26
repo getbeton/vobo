@@ -48,9 +48,11 @@ export interface AnnotationData {
 
 export interface CriterionData {
   id: string;
+  key?: string;
   title: string;
   description: string | null;
   verdict: 'pass' | 'fail' | 'na' | null;
+  source?: 'human' | 'machine' | null;
 }
 
 export interface MachineFindingData {
@@ -63,6 +65,7 @@ export interface MachineFindingData {
   evidence: string;
   note: string;
   triage: string;
+  passed: boolean;
 }
 
 export interface MachineReviewData {
@@ -150,8 +153,8 @@ export function ReviewWorkspace({
   const [error, setError] = useState<string | null>(null);
   const [shipping, setShipping] = useState(false);
   const [ackNeeded, setAckNeeded] = useState(false);
-  const [dismissReason, setDismissReason] = useState('');
   const [findingFocus, setFindingFocus] = useState<string | null>(null);
+  const [localVerdict, setLocalVerdict] = useState<Record<string, 'pass' | 'fail' | 'na'>>({});
   const editRef = useRef<HTMLDivElement>(null);
   const artifactRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -168,7 +171,11 @@ export function ReviewWorkspace({
   coTextRef.current = coText;
 
   const unresolved = annotations.filter((a) => !a.resolved && a.bornRound === request.round);
-  const unscored = criteria.filter((c) => !c.verdict).length;
+  const scoredCriteria = criteria.map((c) => ({
+    ...c,
+    verdict: localVerdict[c.id] ?? c.verdict,
+  }));
+  const unscored = scoredCriteria.filter((c) => !c.verdict).length;
 
   // Paragraph + segment model (prototype segs()): split content, overlay
   // annotation ranges, tag every segment with its absolute offset.
@@ -312,6 +319,7 @@ export function ReviewWorkspace({
   saveCommentRef.current = saveComment;
 
   const setCriterion = (criterionId: string, verdict: 'pass' | 'fail' | 'na') => {
+    setLocalVerdict((prev) => ({ ...prev, [criterionId]: verdict }));
     startTransition(async () => {
       await setCriterionAction(request.id, criterionId, verdict);
       router.refresh();
@@ -452,7 +460,11 @@ export function ReviewWorkspace({
     request.projectSlug
   )}`;
 
-  const untriagedFindings = (machineReview?.findings ?? []).filter((f) => f.triage === 'untriaged');
+  const criterionByKey = Object.fromEntries(
+    scoredCriteria.map((c) => [c.key ?? '', c] as const)
+  );
+  const machineFindingsList = machineReview?.findings ?? [];
+
   const scoreLabel =
     machineReview?.withheld
       ? 'hidden'
@@ -464,26 +476,22 @@ export function ReviewWorkspace({
             ? machineReview.overallScore.toFixed(2)
             : '—';
 
-  const confirmFinding = (id: string) => {
+  const confirmFinding = (id: string, criterionKey: string) => {
+    const crit = criterionByKey[criterionKey];
+    if (crit) setLocalVerdict((prev) => ({ ...prev, [crit.id]: 'pass' }));
     startTransition(async () => {
       const res = await confirmFindingAction(request.id, id);
       if (!res.ok) setError(res.error);
       else router.refresh();
     });
   };
-  const dismissFinding = (id: string) => {
-    const reason = dismissReason.trim();
-    if (!reason) {
-      setError('A dismiss reason is required');
-      return;
-    }
+  const declineFinding = (id: string, criterionKey: string) => {
+    const crit = criterionByKey[criterionKey];
+    if (crit) setLocalVerdict((prev) => ({ ...prev, [crit.id]: 'fail' }));
     startTransition(async () => {
-      const res = await dismissFindingAction(request.id, id, reason);
+      const res = await dismissFindingAction(request.id, id, 'declined');
       if (!res.ok) setError(res.error);
-      else {
-        setDismissReason('');
-        router.refresh();
-      }
+      else router.refresh();
     });
   };
 
@@ -1023,7 +1031,7 @@ export function ReviewWorkspace({
                 >
                   Judge run pending.
                 </div>
-              ) : untriagedFindings.length === 0 && !(machineReview?.findings.length) ? (
+              ) : machineFindingsList.length === 0 ? (
                 <div
                   style={{
                     border: '1px solid var(--border)',
@@ -1034,15 +1042,17 @@ export function ReviewWorkspace({
                     lineHeight: 1.5,
                   }}
                 >
-                  No machine findings on this version.{' '}
+                  No machine review on this version.{' '}
                   <Link href={queueHref} style={{ color: 'var(--blue-700)', textDecoration: 'none', fontWeight: 500 }}>
                     Open the queue page
                   </Link>{' '}
                   to configure the judge.
                 </div>
               ) : (
-                <>
-                  {untriagedFindings.map((f) => (
+                machineFindingsList.map((f) => {
+                  const title = criterionByKey[f.criterionKey]?.title ?? f.criterionKey;
+                  const pass = f.passed;
+                  return (
                     <div
                       key={f.id}
                       data-finding-id={f.id}
@@ -1057,58 +1067,65 @@ export function ReviewWorkspace({
                       }}
                     >
                       <div style={{ display: 'flex', gap: 6, alignItems: 'baseline' }}>
-                        <span style={{ fontSize: 11, color: 'var(--slate-500)' }}>{f.criterionKey}</span>
+                        <span style={{ fontSize: 13, fontWeight: 500 }}>{title}</span>
                         <span
                           style={{
                             fontSize: 10,
                             fontWeight: 600,
-                            color: f.severity === 'critical' ? 'var(--red-700)' : 'var(--slate-600)',
+                            color: pass ? 'var(--green-900)' : 'var(--red-700)',
+                            background: pass ? 'var(--green-100)' : 'var(--red-100)',
+                            borderRadius: 9999,
+                            padding: '1px 8px',
                           }}
                         >
-                          {f.severity}
+                          {pass ? 'pass' : 'fail'}
                         </span>
                       </div>
-                      <span style={{ fontSize: 13, color: 'var(--slate-800)' }}>{f.note}</span>
-                      <span style={{ fontSize: 12, color: 'var(--slate-500)', fontFamily: 'ui-monospace, monospace' }}>
-                        “{f.quote}”
-                      </span>
-                      <div style={{ display: 'flex', gap: 6 }}>
-                        <button
-                          type="button"
-                          className="ds-btn ds-btn--outline ds-btn--sm"
-                          onClick={() => confirmFinding(f.id)}
-                          title="Confirm C"
-                        >
-                          Confirm
-                        </button>
-                        <button
-                          type="button"
-                          className="ds-btn ds-btn--outline ds-btn--sm"
-                          onClick={() => {
-                            setFindingFocus(f.id);
-                            dismissFinding(f.id);
-                          }}
-                          title="Dismiss D"
-                        >
-                          Dismiss
-                        </button>
-                      </div>
+                      <span style={{ fontSize: 13, color: 'var(--slate-800)', lineHeight: 1.45 }}>{f.note}</span>
+                      {f.triage === 'untriaged' && (
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button
+                            type="button"
+                            onClick={() => confirmFinding(f.id, f.criterionKey)}
+                            title="Accept as Pass"
+                            style={{
+                              borderRadius: 6,
+                              padding: '4px 10px',
+                              fontSize: 12,
+                              fontWeight: 500,
+                              cursor: 'pointer',
+                              border: '1px solid var(--green-900)',
+                              background: 'var(--green-100)',
+                              color: 'var(--green-900)',
+                            }}
+                          >
+                            Confirm → Pass
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFindingFocus(f.id);
+                              declineFinding(f.id, f.criterionKey);
+                            }}
+                            title="Mark Fail"
+                            style={{
+                              borderRadius: 6,
+                              padding: '4px 10px',
+                              fontSize: 12,
+                              fontWeight: 500,
+                              cursor: 'pointer',
+                              border: '1px solid var(--red-700)',
+                              background: 'var(--red-100)',
+                              color: 'var(--red-700)',
+                            }}
+                          >
+                            Decline → Fail
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  ))}
-                  {untriagedFindings.length > 0 && (
-                    <input
-                      value={dismissReason}
-                      onChange={(e) => setDismissReason(e.target.value)}
-                      placeholder="Dismiss reason (required)"
-                      style={{
-                        fontSize: 12,
-                        padding: '6px 8px',
-                        border: '1px solid var(--border)',
-                        borderRadius: 6,
-                      }}
-                    />
-                  )}
-                </>
+                  );
+                })
               )}
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0 4px' }}>
@@ -1121,7 +1138,7 @@ export function ReviewWorkspace({
                   {request.policyLabel}
                 </span>
               </div>
-              {criteria.map((c) => (
+              {scoredCriteria.map((c) => (
                 <div
                   key={c.id}
                   style={{
@@ -1133,9 +1150,17 @@ export function ReviewWorkspace({
                     gap: 8,
                   }}
                 >
-                  <span style={{ fontSize: 13, fontWeight: 500 }} title={c.description ?? ''}>
-                    {c.title}
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+                    <span style={{ fontSize: 13, fontWeight: 500 }} title={c.description ?? ''}>
+                      {c.title}
+                    </span>
+                    {c.source === 'machine' && !localVerdict[c.id] && (
+                      <span style={{ fontSize: 10, color: 'var(--slate-500)' }}>machine</span>
+                    )}
+                    {localVerdict[c.id] || c.source === 'human' ? (
+                      <span style={{ fontSize: 10, color: 'var(--slate-500)' }}>you</span>
+                    ) : null}
+                  </div>
                   <div style={{ display: 'flex', gap: 6 }}>
                     {(['pass', 'fail', 'na'] as const).map((v) => {
                       const active = c.verdict === v;

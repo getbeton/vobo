@@ -17,6 +17,7 @@ import { ApiProblem } from '@/lib/core/requests';
 
 const findingSchema = z.object({
   criterion: z.string().min(1).max(64),
+  passed: z.boolean().optional(),
   severity: z.enum(['critical', 'minor']).optional(),
   selector: z.object({
     quote: z.string().min(1),
@@ -91,7 +92,10 @@ export async function POST(req: Request) {
       versionId,
       producerId: producer.producerId,
       idempotencyKey: body.idempotency_key,
-      findings: body.findings,
+      findings: body.findings.map((f) => ({
+        ...f,
+        passed: f.passed,
+      })),
     });
 
     return Response.json(
