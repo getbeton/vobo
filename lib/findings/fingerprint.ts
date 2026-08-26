@@ -22,13 +22,19 @@ export function quoteContext(content: string, startPos: number, endPos: number) 
   };
 }
 
-/** Locate a verbatim quote in the artifact. Exact match only — unanchorable is dropped. */
+/**
+ * Locate a quote in the artifact. Exact first, then case-insensitive.
+ * Returns offsets in `content`; the caller must slice those offsets for the
+ * stored quote so ingest can validate against the real bytes.
+ */
 export function locateQuote(
   content: string,
   quote: string
 ): { startPos: number; endPos: number } | null {
   if (!quote) return null;
-  const idx = content.indexOf(quote);
+  const exact = content.indexOf(quote);
+  if (exact >= 0) return { startPos: exact, endPos: exact + quote.length };
+  const idx = content.toLowerCase().indexOf(quote.toLowerCase());
   if (idx < 0) return null;
   return { startPos: idx, endPos: idx + quote.length };
 }

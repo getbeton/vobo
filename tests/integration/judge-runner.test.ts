@@ -7,6 +7,7 @@ import { eq } from 'drizzle-orm';
 import type { JudgeScorer } from '@/lib/judge/scorer';
 import { detectPii } from '@/lib/judge/pii';
 import { isSampled } from '@/lib/judge/sampling';
+import { locateQuote } from '@/lib/findings/fingerprint';
 import { readFileSync } from 'fs';
 
 const BODY = `Subject: hello
@@ -139,6 +140,11 @@ describe('VOBO-51 judge runner', () => {
     const a = isSampled('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 50);
     const b = isSampled('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', 50);
     expect(a).toBe(b);
+  });
+
+  it('locates a quote ignoring case and returns the artifact span', () => {
+    const loc = locateQuote('Hi Dana, we sincerely apologize.', 'We Sincerely Apologize');
+    expect(loc).toEqual({ startPos: 9, endPos: 31 });
   });
 
   it('PII regex flags an email', () => {

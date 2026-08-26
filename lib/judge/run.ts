@@ -152,11 +152,12 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
         dropped += 1;
         continue;
       }
+      const actual = version.contentMd.slice(loc.startPos, loc.endPos);
       findings.push({
         criterion: s.criterionKey,
         severity: 'minor' as const,
-        selector: { quote: s.quote, start: loc.startPos, end: loc.endPos },
-        evidence: s.quote,
+        selector: { quote: actual, start: loc.startPos, end: loc.endPos },
+        evidence: actual,
         note: s.note,
       });
     }
