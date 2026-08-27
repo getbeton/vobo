@@ -24,6 +24,7 @@ import {
   repin,
   retire,
 } from '@/lib/core/verdict';
+import { confirmFinding, dismissFinding } from '@/lib/findings/triage';
 
 export type ActionResult<T = unknown> =
   | { ok: true; data?: T }
@@ -114,6 +115,22 @@ export const setCriterionAction = wrap(
   }
 );
 
+export const confirmFindingAction = wrap(async (requestId: string, findingId: string) => {
+  const user = await guardReviewer(requestId);
+  const res = await confirmFinding(db, { findingId, userId: user.id });
+  revalidatePath(`/review/${requestId}`);
+  return { verdict: res.verdict };
+});
+
+export const dismissFindingAction = wrap(
+  async (requestId: string, findingId: string, reason?: string) => {
+    const user = await guardReviewer(requestId);
+    const res = await dismissFinding(db, { findingId, userId: user.id, reason });
+    revalidatePath(`/review/${requestId}`);
+    return { verdict: res.verdict };
+  }
+);
+
 export const archiveRequestsAction = wrap(
   async (requestIds: string[], reason?: string) => {
     if (requestIds.length === 0) throw new ApiProblem(422, 'nothing_selected', 'Select at least one request');
@@ -174,6 +191,7 @@ export const shipAction = wrap(
     reason?: string;
     acknowledgeInterstitials?: boolean;
     editedContentMd?: string;
+    overrideUntriagedFindings?: boolean;
   }) => {
     const user = await guardReviewer(input.requestId);
     const res = await ship(db, { ...input, userId: user.id });

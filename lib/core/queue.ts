@@ -1,7 +1,8 @@
 import { and, asc, desc, eq, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm';
-import { reviewRequests, leases, queues, projects } from '@/lib/db/schema';
+import { reviewRequests, leases, queues, projects, policyVersions } from '@/lib/db/schema';
 import { appendEvent, Db, DbOrTx } from './eventlog';
 import { ApiProblem, getPolicyForRequest } from './requests';
+import { parsePolicyConfig } from './policy';
 
 /**
  * Queue ranking + atomic leases. Ranking rules are Policy-owned (reviewers
@@ -171,6 +172,26 @@ export interface QueueRow {
 }
 
 export async function rankedQueue(db: DbOrTx, queueId: string, userId: string): Promise<QueueRow[]> {
+  const queue = await db.query.queues.findFirst({ where: eq(queues.id, queueId) });
+  const pv = queue?.activePolicyVersionId
+    ? await db.query.policyVersions.findFirst({
+        where: eq(policyVersions.id, queue.activePolicyVersionId),
+      })
+    : null;
+  const policy = parsePolicyConfig(pv?.config ?? {});
+  const rules = policy.rankingRules;
+
+  const orderSql = [
+    sql`case when ${reviewRequests.stickyReviewerId} = ${userId} then 0 else 1 end`,
+  ];
+  for (const rule of rules) {
+    if (rule === 'sla') orderSql.push(sql`${reviewRequests.slaDueAt} asc nulls last`);
+    else if (rule === 'priority') orderSql.push(asc(reviewRequests.priority));
+    else if (rule === 'judge_confidence')
+      orderSql.push(sql`${reviewRequests.judgeOverallScore} asc nulls last`);
+    else orderSql.push(asc(reviewRequests.createdAt));
+  }
+
   const rows = await db
     .select({ request: reviewRequests, lease: leases })
     .from(reviewRequests)
@@ -182,12 +203,7 @@ export async function rankedQueue(db: DbOrTx, queueId: string, userId: string): 
         isNull(reviewRequests.archivedAt)
       )
     )
-    .orderBy(
-      sql`case when ${reviewRequests.stickyReviewerId} = ${userId} then 0 else 1 end`,
-      sql`${reviewRequests.slaDueAt} asc nulls last`,
-      asc(reviewRequests.priority),
-      asc(reviewRequests.createdAt)
-    );
+    .orderBy(...orderSql);
 
   const now = Date.now();
   return rows.map(({ request, lease }) => {
@@ -197,6 +213,9 @@ export async function rankedQueue(db: DbOrTx, queueId: string, userId: string): 
       sticky ? 'sticky: returning to you' : null,
       request.slaDueAt ? `sla ${request.slaDueAt.toISOString()}` : 'no sla',
       `priority P${request.priority}`,
+      request.judgeOverallScore != null
+        ? `judge ${request.judgeOverallScore.toFixed(2)}`
+        : 'judge —',
       'fifo',
     ].filter(Boolean);
     return {

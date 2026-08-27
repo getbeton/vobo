@@ -9,10 +9,12 @@ import {
   decisions,
   leases,
   repinHistory,
+  machineFindings,
 } from '@/lib/db/schema';
 import { appendEvent, Db, DbOrTx } from './eventlog';
 import { ApiProblem, getPolicyForRequest } from './requests';
 import { contentHash } from './events';
+import { untriagedFindings } from '@/lib/findings/read';
 
 /**
  * Verdict state machine. Semantics are NORMATIVE from the design prototype's
@@ -83,7 +85,15 @@ export async function approveGate(
     .select()
     .from(criteriaVerdicts)
     .where(and(eq(criteriaVerdicts.versionId, version.id), eq(criteriaVerdicts.userId, userId)));
-  const unscored = activeCriteria.length - scored.length;
+  const machineRows = await tx
+    .select({ key: machineFindings.criterionKey })
+    .from(machineFindings)
+    .where(eq(machineFindings.versionId, version.id));
+  const humanIds = new Set(scored.map((s) => s.criterionId));
+  const machineKeys = new Set(machineRows.map((m) => m.key));
+  const unscored = activeCriteria.filter(
+    (c) => !humanIds.has(c.id) && !machineKeys.has(c.key)
+  ).length;
   if (unscored > 0) {
     reasons.push(`Score all criteria to proceed — ${unscored} left`);
   }
@@ -161,6 +171,8 @@ export interface ShipInput {
   acknowledgeInterstitials?: boolean;
   /** For approve_edited: the human-corrected artifact content. */
   editedContentMd?: string;
+  /** Ship despite untriaged machine findings. Recorded on the signed event. */
+  overrideUntriagedFindings?: boolean;
 }
 
 export async function ship(db: Db, input: ShipInput) {
@@ -177,6 +189,8 @@ export async function ship(db: Db, input: ShipInput) {
 
     const { request, version } = await loadContext(tx, input.requestId);
     const policy = await getPolicyForRequest(tx, request.policyVersionId);
+
+    const untriaged = await untriagedFindings(tx, request.id, version.id);
 
     if (input.kind === 'escalate') {
       if (!input.reason || input.reason.trim().length < 4)
@@ -279,6 +293,8 @@ export async function ship(db: Db, input: ShipInput) {
       policy_version_id: request.policyVersionId,
       criteria: criteriaRows,
       was_edited: input.kind === 'approve_edited',
+      untriaged_override: Boolean(input.overrideUntriagedFindings),
+      untriaged_finding_ids: untriaged.map((f) => f.id),
     };
 
     let newStatus: 'accepted' | 'rejected' | 'escalated';

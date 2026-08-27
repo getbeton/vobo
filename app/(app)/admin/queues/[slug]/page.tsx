@@ -82,6 +82,9 @@ export default async function QueueAdminPage({
   const overrides = (production.policyOverrides ?? {}) as Record<string, unknown>;
   const hasBudgetOverride = 'roundBudget' in overrides;
   const hasBlindOverride = 'blindN' in overrides;
+  const hasJudgeOverride = 'judgeEnabled' in overrides;
+  const hasJudgeSampleOverride = 'judgeSamplingPct' in overrides;
+  const hasJudgeBlindOverride = 'judgeBlindSamplingPct' in overrides;
 
   const apply = setQueueSlugOverrideAction.bind(null, project.id, slug);
 
@@ -300,10 +303,76 @@ export default async function QueueAdminPage({
                   : 'off — back to the open pool'}
               </span>
             </div>
+            <SettingRow
+              label="LLM judge"
+              value={
+                hasJudgeOverride
+                  ? `${resolved.config.judgeEnabled ? 'on' : 'off'} · override`
+                  : `inherit — ${resolved.config.judgeEnabled ? 'on' : 'off'}`
+              }
+              canEdit={isOperator}
+              apply={apply}
+              width={230}
+              items={[
+                {
+                  label: 'Inherit',
+                  selected: !hasJudgeOverride,
+                  patch: { judgeEnabled: null },
+                },
+                {
+                  label: 'on (BYO key)',
+                  selected: hasJudgeOverride && resolved.config.judgeEnabled,
+                  patch: { judgeEnabled: true },
+                },
+                {
+                  label: 'off',
+                  selected: hasJudgeOverride && !resolved.config.judgeEnabled,
+                  patch: { judgeEnabled: false },
+                },
+              ]}
+            />
+            <SettingRow
+              label="Judge sampling"
+              value={`${resolved.config.judgeSamplingPct}%${hasJudgeSampleOverride ? ' · override' : ''}`}
+              canEdit={isOperator}
+              apply={apply}
+              width={230}
+              items={[
+                { label: '100%', selected: resolved.config.judgeSamplingPct === 100, patch: { judgeSamplingPct: 100 } },
+                { label: '30%', selected: resolved.config.judgeSamplingPct === 30, patch: { judgeSamplingPct: 30 } },
+                { label: '0%', selected: resolved.config.judgeSamplingPct === 0, patch: { judgeSamplingPct: 0 } },
+              ]}
+            />
+            <SettingRow
+              label="Judge-blind sampling"
+              value={
+                resolved.config.judgeBlindSamplingPct
+                  ? `${resolved.config.judgeBlindSamplingPct}% — output withheld permanently`
+                  : 'off — no post-verdict reveal exists'
+              }
+              canEdit={isOperator}
+              apply={apply}
+              width={280}
+              items={[
+                {
+                  label: 'off (default)',
+                  selected: !hasJudgeBlindOverride && resolved.config.judgeBlindSamplingPct === 0,
+                  patch: { judgeBlindSamplingPct: 0 },
+                },
+                { label: '10%', selected: resolved.config.judgeBlindSamplingPct === 10, patch: { judgeBlindSamplingPct: 10 } },
+                { label: '20%', selected: resolved.config.judgeBlindSamplingPct === 20, patch: { judgeBlindSamplingPct: 20 } },
+              ]}
+            />
+            <Link
+              href={`/admin/queues/${slug}/agreement?project=${encodeURIComponent(project.slug)}`}
+              style={{ fontSize: 12, color: 'var(--blue-700)', textDecoration: 'none' }}
+            >
+              Judge-vs-human agreement →
+            </Link>
             <span style={{ fontSize: 11, color: 'var(--slate-400)' }}>
               {isOperator
-                ? 'Overrides apply to new rounds in both environments — each change publishes a new policy version.'
-                : 'Read-only — an operator can override the round budget and blind-N here.'}
+                ? 'Overrides apply to new rounds in both environments — each change publishes a new policy version. BYO key is VOBO_JUDGE_OPENAI_API_KEY. Blind output is withheld permanently.'
+                : 'Read-only — an operator can override the round budget, judge, and blind-N here.'}
             </span>
           </div>
         </div>
