@@ -1,5 +1,5 @@
 import { notFound, redirect } from 'next/navigation';
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
 import { getUser } from '@/lib/db/queries';
 import {
@@ -13,11 +13,13 @@ import {
   contextFiles,
   queues,
   projects,
+  judgeRecords,
 } from '@/lib/db/schema';
 import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
 import { NoAccess } from '@/components/shell/NoAccess';
 import { parsePolicyConfig } from '@/lib/core/policy';
 import { ReviewWorkspace } from '@/components/review/ReviewWorkspace';
+import { readFindings } from '@/lib/findings/read';
 
 export const dynamic = 'force-dynamic';
 
@@ -76,6 +78,27 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
   });
   const policy = pv ? parsePolicyConfig(pv.config) : null;
 
+  const machine = await readFindings(db, {
+    requestId: request.id,
+    versionId: version.id,
+    audience: 'reviewer',
+  });
+
+  const [latestRecord] = await db
+    .select()
+    .from(judgeRecords)
+    .where(eq(judgeRecords.versionId, version.id))
+    .orderBy(desc(judgeRecords.id))
+    .limit(1);
+  const recordScores = (
+    latestRecord?.payload as { scores?: Array<{ criterion?: string; score?: number }> } | null
+  )?.scores;
+  const scoreByKey = Object.fromEntries(
+    (recordScores ?? [])
+      .filter((s) => typeof s.criterion === 'string' && typeof s.score === 'number')
+      .map((s) => [s.criterion as string, s.score as number])
+  );
+
   return (
     <ReviewWorkspace
       request={{
@@ -105,13 +128,48 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
         state: state?.state ?? (ann.bornRound === request.round ? 'new' : null),
         confirmation: state?.confirmation ?? null,
       }))}
-      criteria={crits.map((c) => ({
-        id: c.id,
-        title: c.title,
-        description: c.description,
-        verdict: verdicts.find((v) => v.criterionId === c.id)?.verdict ?? null,
-      }))}
+      criteria={crits.map((c) => {
+        const human = verdicts.find((v) => v.criterionId === c.id)?.verdict ?? null;
+        const machineRow = machine.withheld
+          ? undefined
+          : machine.findings.find((f) => f.criterionKey === c.key);
+        const machineVerdict =
+          machineRow && 'passed' in machineRow
+            ? machineRow.passed
+              ? ('pass' as const)
+              : ('fail' as const)
+            : null;
+        const columnScore =
+          machineRow && 'score' in machineRow && machineRow.score != null
+            ? Number(machineRow.score)
+            : null;
+        const score = machine.withheld ? null : (columnScore ?? scoreByKey[c.key] ?? null);
+        return {
+          id: c.id,
+          key: c.key,
+          title: c.title,
+          description: c.description,
+          verdict: human ?? machineVerdict,
+          source: human ? ('human' as const) : machineVerdict ? ('machine' as const) : null,
+          score,
+          finding:
+            machineRow && !machine.withheld
+              ? {
+                  startPos: machineRow.startPos,
+                  endPos: machineRow.endPos,
+                  passed: 'passed' in machineRow ? Boolean(machineRow.passed) : false,
+                  note: machineRow.note,
+                }
+              : null,
+        };
+      })}
       files={files.map((f) => ({ name: f.name, kind: f.contentType ?? 'file' }))}
+      machineReview={{
+        withheld: machine.withheld,
+        pending: machine.run?.state === 'pending' || machine.run?.state === 'running',
+        failed: machine.run?.state === 'failed',
+        overallScore: machine.run?.overallScore ?? request.judgeOverallScore ?? null,
+      }}
     />
   );
 }

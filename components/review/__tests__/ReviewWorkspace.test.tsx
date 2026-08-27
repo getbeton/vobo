@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { ReviewWorkspace, AnnotationData, CriterionData } from '../ReviewWorkspace';
+import {
+  ReviewWorkspace,
+  AnnotationData,
+  CriterionData,
+} from '../ReviewWorkspace';
 
 /**
  * VOBO-231. PR #5 fixed three things a reviewer can only see on screen: the
@@ -12,16 +16,27 @@ import { ReviewWorkspace, AnnotationData, CriterionData } from '../ReviewWorkspa
  * keeps the node environment.
  */
 
-const addComment = vi.fn(async () => ({ ok: true as const, data: { annotationId: 'a1' } }));
-const editComment = vi.fn(async () => ({ ok: true as const }));
-const resolveComment = vi.fn(async () => ({ ok: true as const }));
+const addComment = vi.fn(async (_payload: unknown) => ({
+  ok: true as const,
+  data: { annotationId: 'a1' },
+}));
+const editComment = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
+const resolveComment = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
+const setCriterion = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
+const ship = vi.fn(async (_payload: unknown) => ({
+  ok: true as const,
+  data: { nextRequestId: null as string | null, nextLeaseMine: false },
+}));
 
 vi.mock('@/lib/actions/review', () => ({
-  addCommentAction: (...args: unknown[]) => addComment(...(args as [])),
-  editCommentAction: (...args: unknown[]) => editComment(...(args as [])),
-  resolveCommentAction: (...args: unknown[]) => resolveComment(...(args as [])),
-  setCriterionAction: async () => ({ ok: true }),
-  shipAction: async () => ({ ok: true }),
+  addCommentAction: (payload: unknown) => addComment(payload),
+  editCommentAction: (...args: unknown[]) => editComment(...args),
+  resolveCommentAction: (...args: unknown[]) => resolveComment(...args),
+  setCriterionAction: (...args: unknown[]) => setCriterion(...args),
+  confirmFindingAction: async () => ({ ok: true }),
+  dismissFindingAction: async () => ({ ok: true }),
+  shipAction: (payload: unknown) => ship(payload),
+  claimAction: async () => ({ ok: true }),
   gateAction: async () => ({ ok: true, data: { blocked: false, reasons: [], interstitials: [] } }),
 }));
 
@@ -84,6 +99,8 @@ describe('ReviewWorkspace — the comment composer', () => {
   beforeEach(() => {
     addComment.mockClear();
     editComment.mockClear();
+    setCriterion.mockClear();
+    ship.mockClear();
   });
 
   it('marks the selected range while the composer is open', async () => {
@@ -145,7 +162,7 @@ describe('ReviewWorkspace — the comment composer', () => {
     fireEvent.change(box, { target: { value: 'This claim is not in the dossier.' } });
     fireEvent.keyDown(box, { key: 'Enter', metaKey: true });
     await waitFor(() => expect(addComment).toHaveBeenCalledTimes(1));
-    const payload = addComment.mock.calls[0][0] as unknown as Record<string, unknown>;
+    const payload = addComment.mock.calls[0][0] as Record<string, unknown>;
     expect(payload.body).toBe('This claim is not in the dossier.');
     expect(payload.startPos).toBe(4);
     expect(payload.endPos).toBe(15);
@@ -231,5 +248,204 @@ describe('ReviewWorkspace — editing a comment', () => {
   it('still renders an Expected value written before the field was removed', () => {
     renderWorkspace([{ ...OPEN_COMMENT, expected: 'Name a real customer.' }]);
     expect(screen.getByText(/Expected: Name a real customer\./)).toBeTruthy();
+  });
+});
+
+const JUDGED: CriterionData[] = [
+  {
+    id: 'c1',
+    key: 'voice',
+    title: 'Voice',
+    description: null,
+    verdict: 'pass',
+    source: 'machine',
+    score: 0.91,
+    finding: {
+      startPos: 4,
+      endPos: 15,
+      passed: true,
+      note: 'Voice matches the dossier.',
+    },
+  },
+  {
+    id: 'c2',
+    key: 'factual',
+    title: 'Factual',
+    description: null,
+    verdict: 'fail',
+    source: 'machine',
+    score: 0.12,
+    finding: {
+      startPos: CONTENT.indexOf('second'),
+      endPos: CONTENT.indexOf('second') + 'second'.length,
+      passed: false,
+      note: 'Invented claim.',
+    },
+  },
+];
+
+function renderJudged(
+  criteria: CriterionData[] = JUDGED,
+  annotations: AnnotationData[] = []
+) {
+  return render(
+    <ReviewWorkspace
+      request={REQUEST}
+      contentMd={CONTENT}
+      versionId="v1"
+      annotations={annotations}
+      criteria={criteria}
+      files={[]}
+      machineReview={{ withheld: false, pending: false, failed: false, overallScore: 0.5 }}
+    />
+  );
+}
+
+describe('ReviewWorkspace — criterion cards', () => {
+  beforeEach(() => {
+    setCriterion.mockClear();
+    ship.mockClear();
+  });
+
+  it('has Criteria and Comments, not a Machine review section', () => {
+    renderJudged();
+    expect(screen.queryByText('Machine review')).toBeNull();
+    expect(screen.getByText('Criteria')).toBeTruthy();
+    expect(screen.getByText('Comments')).toBeTruthy();
+  });
+
+  it('shows the title and 0–1 confidence while collapsed', () => {
+    renderJudged();
+    expect(screen.getByText('Voice')).toBeTruthy();
+    expect(screen.getByTestId('confidence-c1').textContent).toBe('0.91');
+    expect(screen.getByTestId('confidence-c2').textContent).toBe('0.12');
+    expect(screen.queryByText('Voice matches the dossier.')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Pass' })).toBeNull();
+  });
+
+  it('unwraps to Pass / Fail / N/A so the human can override', () => {
+    renderJudged();
+    fireEvent.click(screen.getAllByTitle('Show criterion detail')[0]);
+    expect(screen.getByText('Voice matches the dossier.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Pass' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Fail' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'N/A' })).toBeTruthy();
+  });
+
+  it('highlights the judged span when the criterion is hovered', async () => {
+    renderJudged();
+    fireEvent.mouseEnter(screen.getByTestId('criterion-c1'));
+    const hl = await screen.findByTitle('Judge: pass');
+    expect(hl.textContent).toBe('first claim');
+    expect(hl.getAttribute('style')).toContain('green');
+  });
+
+  it('highlights a fail span in red', async () => {
+    renderJudged();
+    fireEvent.mouseEnter(screen.getByTestId('criterion-c2'));
+    const hl = await screen.findByTitle('Judge: fail');
+    expect(hl.textContent).toBe('second');
+    expect(hl.getAttribute('style')).toContain('red');
+  });
+
+  it('focuses the first criterion card on load', async () => {
+    renderJudged();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('criterion-c1')));
+  });
+
+  it('Enter marks pass and moves to the next criterion', async () => {
+    renderJudged();
+    const first = screen.getByTestId('criterion-c1');
+    await waitFor(() => expect(document.activeElement).toBe(first));
+    fireEvent.keyDown(first, { key: 'Enter' });
+    await waitFor(() => expect(setCriterion).toHaveBeenCalledWith('r1', 'c1', 'pass'));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('criterion-c2')));
+  });
+
+  it('Backspace marks fail and moves to the next criterion', async () => {
+    renderJudged();
+    const first = screen.getByTestId('criterion-c1');
+    await waitFor(() => expect(document.activeElement).toBe(first));
+    fireEvent.keyDown(first, { key: 'Backspace' });
+    await waitFor(() => expect(setCriterion).toHaveBeenCalledWith('r1', 'c1', 'fail'));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('criterion-c2')));
+  });
+});
+
+describe('ReviewWorkspace — the single verdict button', () => {
+  beforeEach(() => {
+    ship.mockClear();
+    setCriterion.mockClear();
+  });
+
+  it('shows Accept in green when every criterion passes and there is no comment', () => {
+    renderJudged([
+      { ...JUDGED[0], verdict: 'pass' },
+      { ...JUDGED[1], verdict: 'pass', finding: { ...JUDGED[1].finding!, passed: true } },
+    ]);
+    const btn = screen.getByTestId('verdict-button');
+    expect(btn.textContent).toMatch(/Accept/);
+    expect(btn.getAttribute('style')).toContain('green');
+    expect(screen.queryByText('Reject — rerun')).toBeNull();
+  });
+
+  it('shows Reject in red when a criterion is not pass', () => {
+    renderJudged();
+    const btn = screen.getByTestId('verdict-button');
+    expect(btn.textContent).toMatch(/Reject/);
+    expect(btn.getAttribute('style')).toContain('red');
+  });
+
+  it('shows Reject when there is an unresolved comment', () => {
+    renderJudged(
+      [
+        { ...JUDGED[0], verdict: 'pass' },
+        { ...JUDGED[1], verdict: 'pass', finding: { ...JUDGED[1].finding!, passed: true } },
+      ],
+      [OPEN_COMMENT]
+    );
+    expect(screen.getByTestId('verdict-button').textContent).toMatch(/Reject/);
+  });
+
+  it('Cmd+Enter ships accept when every criterion passes', async () => {
+    renderJudged([
+      { ...JUDGED[0], verdict: 'pass' },
+      { ...JUDGED[1], verdict: 'pass', finding: { ...JUDGED[1].finding!, passed: true } },
+    ]);
+    const card = screen.getByTestId('criterion-c1');
+    await waitFor(() => expect(document.activeElement).toBe(card));
+    fireEvent.keyDown(card, { key: 'Enter', metaKey: true });
+    await waitFor(() => expect(ship).toHaveBeenCalledTimes(1));
+    expect(ship.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ requestId: 'r1', kind: 'approve' })
+    );
+  });
+
+  it('Cmd+Enter ships reject_corrections when a comment is open', async () => {
+    renderJudged(
+      [
+        { ...JUDGED[0], verdict: 'pass' },
+        { ...JUDGED[1], verdict: 'pass', finding: { ...JUDGED[1].finding!, passed: true } },
+      ],
+      [OPEN_COMMENT]
+    );
+    const card = screen.getByTestId('criterion-c1');
+    await waitFor(() => expect(document.activeElement).toBe(card));
+    fireEvent.keyDown(card, { key: 'Enter', metaKey: true });
+    await waitFor(() => expect(ship).toHaveBeenCalledTimes(1));
+    expect(ship.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ requestId: 'r1', kind: 'reject_corrections' })
+    );
+  });
+
+  it('Cmd+Enter ships reject_rerun when a criterion fails and there is no comment', async () => {
+    renderJudged();
+    const card = screen.getByTestId('criterion-c1');
+    await waitFor(() => expect(document.activeElement).toBe(card));
+    fireEvent.keyDown(card, { key: 'Enter', metaKey: true });
+    await waitFor(() => expect(ship).toHaveBeenCalledTimes(1));
+    expect(ship.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ requestId: 'r1', kind: 'reject_rerun' })
+    );
   });
 });

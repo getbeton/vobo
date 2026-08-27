@@ -15,20 +15,17 @@ import {
 } from '@/lib/actions/review';
 
 /**
- * Review Workspace — verbatim port of the prototype: top action bar
- * (Back · unresolved chip · main verdict ⌘↵ · Correct manually), left Task
- * rail (prompt, files, source), center markdown with anchored highlights and
- * selection→composer (with Expected), right rail (Machine review · Criteria
- * with policy-version stamp · Comments with resolve-does-not-ship), edit
- * mode capturing a human-authored version.
+ * Review Workspace — top action bar (Back · unresolved chip · one verdict ⌘↵ ·
+ * Correct manually), left Task rail, center markdown with anchored highlights
+ * and selection→composer, right rail (Criteria · Comments).
  *
- * The verdicts sit in the top bar and ship in one click (VOBO-223). There is no
- * pre-submit sheet: it asked the same four questions a second time. Escalate is
- * gone from the UI; a reject at the last policy round ships and flags the
- * request for an operator. The engine keeps the escalate kind, because the
- * four-state pull contract and existing rows depend on it.
+ * A judge run folds into the criterion cards: collapsed they show unwrap +
+ * name + 0–1 confidence. Unwrap reveals Pass / Fail / N/A so a human can
+ * override. Hover or focus on a card highlights the span the judge used.
  *
- * MVP: the judge does not run — the machine section renders its empty state.
+ * Keyboard: Enter = pass and next criterion, Backspace = fail and next.
+ * ⌘↵ ships the single verdict — Reject if any comment is open or any
+ * criterion is not pass, otherwise Accept — then opens the next queue item.
  */
 
 export interface AnnotationData {
@@ -44,11 +41,30 @@ export interface AnnotationData {
   confirmation: string | null;
 }
 
+export interface CriterionFinding {
+  startPos: number;
+  endPos: number;
+  passed: boolean;
+  note: string;
+}
+
 export interface CriterionData {
   id: string;
+  key?: string;
   title: string;
   description: string | null;
   verdict: 'pass' | 'fail' | 'na' | null;
+  source?: 'human' | 'machine' | null;
+  /** 0–1 model confidence that this criterion passed. Null when no judge. */
+  score?: number | null;
+  finding?: CriterionFinding | null;
+}
+
+export interface MachineReviewData {
+  withheld: boolean;
+  pending: boolean;
+  failed: boolean;
+  overallScore: number | null;
 }
 
 interface RequestData {
@@ -86,6 +102,16 @@ const pendingStyle: React.CSSProperties = {
   borderBottom: '2px dashed var(--amber-500)',
 };
 
+const judgePassStyle: React.CSSProperties = {
+  background: 'var(--green-100)',
+  borderBottom: '2px solid var(--green-500)',
+};
+
+const judgeFailStyle: React.CSSProperties = {
+  background: 'var(--red-100)',
+  borderBottom: '2px solid var(--red-500)',
+};
+
 function annStyle(a: AnnotationData): React.CSSProperties {
   if (a.resolved)
     return { background: 'var(--green-100)', borderBottom: '2px solid var(--green-500)' };
@@ -94,6 +120,19 @@ function annStyle(a: AnnotationData): React.CSSProperties {
   return { background: 'var(--blue-100)', borderBottom: '2px solid var(--blue-500)' };
 }
 
+function formatScore(score: number | null | undefined): string {
+  if (score == null || Number.isNaN(score)) return '—';
+  return Math.min(1, Math.max(0, score)).toFixed(2);
+}
+
+type OverlayMark = {
+  startPos: number;
+  endPos: number;
+  ann: AnnotationData | null;
+  pending: boolean;
+  judge: 'pass' | 'fail' | null;
+};
+
 export function ReviewWorkspace({
   request,
   contentMd,
@@ -101,6 +140,7 @@ export function ReviewWorkspace({
   annotations,
   criteria,
   files,
+  machineReview = null,
 }: {
   request: RequestData;
   contentMd: string;
@@ -108,6 +148,7 @@ export function ReviewWorkspace({
   annotations: AnnotationData[];
   criteria: CriterionData[];
   files: Array<{ name: string; kind: string }>;
+  machineReview?: MachineReviewData | null;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -126,6 +167,14 @@ export function ReviewWorkspace({
   const [error, setError] = useState<string | null>(null);
   const [shipping, setShipping] = useState(false);
   const [ackNeeded, setAckNeeded] = useState(false);
+  const [localVerdict, setLocalVerdict] = useState<Record<string, 'pass' | 'fail' | 'na'>>({});
+  const [openIds, setOpenIds] = useState<Record<string, boolean>>({});
+  const [focusedCriterionId, setFocusedCriterionId] = useState<string | null>(null);
+  const [hoverRange, setHoverRange] = useState<{
+    startPos: number;
+    endPos: number;
+    passed: boolean;
+  } | null>(null);
   const editRef = useRef<HTMLDivElement>(null);
   const artifactRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -133,6 +182,7 @@ export function ReviewWorkspace({
   const mainVerdictRef = useRef<(() => void) | null>(null);
   const saveCommentRef = useRef<() => void>(() => {});
   const railRef = useRef<HTMLDivElement>(null);
+  const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   // Set in the same tick so a held ⌘↵ cannot fire save twice before React commits.
   const commentBusyRef = useRef(false);
   const shippingRef = useRef(false);
@@ -142,7 +192,13 @@ export function ReviewWorkspace({
   coTextRef.current = coText;
 
   const unresolved = annotations.filter((a) => !a.resolved && a.bornRound === request.round);
-  const unscored = criteria.filter((c) => !c.verdict).length;
+  const scoredCriteria = criteria.map((c) => ({
+    ...c,
+    verdict: localVerdict[c.id] ?? c.verdict,
+  }));
+  const unscored = scoredCriteria.filter((c) => !c.verdict).length;
+  const criteriaNotMet = scoredCriteria.some((c) => c.verdict !== 'pass');
+  const shouldReject = unresolved.length > 0 || criteriaNotMet;
 
   // Paragraph + segment model (prototype segs()): split content, overlay
   // annotation ranges, tag every segment with its absolute offset.
@@ -166,42 +222,89 @@ export function ReviewWorkspace({
         composer && composer.start >= p.start && composer.start < p.end
           ? { startPos: composer.start, endPos: composer.end }
           : null;
+      const highlight =
+        hoverRange && hoverRange.startPos < p.end && hoverRange.endPos > p.start
+          ? {
+              startPos: Math.max(hoverRange.startPos, p.start),
+              endPos: Math.min(hoverRange.endPos, p.end),
+              passed: hoverRange.passed,
+            }
+          : null;
       const marks = annotations
         .filter((a) => a.startPos >= p.start && a.startPos < p.end)
         .sort((a, b) => a.startPos - b.startPos);
-      const overlay: Array<{ startPos: number; endPos: number; ann: AnnotationData | null }> = [
-        ...marks.map((a) => ({ startPos: a.startPos, endPos: a.endPos, ann: a })),
-        ...(pending ? [{ ...pending, ann: null }] : []),
-      ].sort((a, b) => a.startPos - b.startPos);
+      const overlay: OverlayMark[] = [
+        ...marks.map((a) => ({
+          startPos: a.startPos,
+          endPos: a.endPos,
+          ann: a,
+          pending: false,
+          judge: null,
+        })),
+        ...(pending
+          ? [{ startPos: pending.startPos, endPos: pending.endPos, ann: null, pending: true, judge: null }]
+          : []),
+        ...(highlight
+          ? [
+              {
+                startPos: highlight.startPos,
+                endPos: highlight.endPos,
+                ann: null,
+                pending: false,
+                judge: (highlight.passed ? 'pass' : 'fail') as 'pass' | 'fail',
+              },
+            ]
+          : []),
+      ].sort((a, b) => {
+        if (a.startPos !== b.startPos) return a.startPos - b.startPos;
+        const rank = (m: OverlayMark) => (m.ann ? 0 : m.pending ? 1 : 2);
+        return rank(a) - rank(b);
+      });
 
       const segs: Array<{
         text: string;
         start: number;
         ann: AnnotationData | null;
         pending: boolean;
+        judge: 'pass' | 'fail' | null;
       }> = [];
       let pos = p.start;
       for (const mark of overlay) {
         if (mark.startPos < pos) continue; // overlap: skip
         if (mark.startPos > pos)
-          segs.push({ text: contentMd.slice(pos, mark.startPos), start: pos, ann: null, pending: false });
+          segs.push({
+            text: contentMd.slice(pos, mark.startPos),
+            start: pos,
+            ann: null,
+            pending: false,
+            judge: null,
+          });
         const end = Math.min(mark.endPos, p.end);
         segs.push({
           text: contentMd.slice(mark.startPos, end),
           start: mark.startPos,
           ann: mark.ann,
-          pending: mark.ann === null,
+          pending: mark.pending,
+          judge: mark.judge,
         });
         pos = end;
       }
       if (pos < p.end)
-        segs.push({ text: contentMd.slice(pos, p.end), start: pos, ann: null, pending: false });
+        segs.push({
+          text: contentMd.slice(pos, p.end),
+          start: pos,
+          ann: null,
+          pending: false,
+          judge: null,
+        });
       return {
         ...p,
-        segs: segs.length ? segs : [{ text: p.text, start: p.start, ann: null, pending: false }],
+        segs: segs.length
+          ? segs
+          : [{ text: p.text, start: p.start, ann: null, pending: false, judge: null }],
       };
     });
-  }, [contentMd, annotations, composer]);
+  }, [contentMd, annotations, composer, hoverRange]);
 
   const captureSelection = () => {
     const sel = window.getSelection();
@@ -286,10 +389,39 @@ export function ReviewWorkspace({
   saveCommentRef.current = saveComment;
 
   const setCriterion = (criterionId: string, verdict: 'pass' | 'fail' | 'na') => {
+    setLocalVerdict((prev) => ({ ...prev, [criterionId]: verdict }));
     startTransition(async () => {
       await setCriterionAction(request.id, criterionId, verdict);
       router.refresh();
     });
+  };
+
+  const showFinding = (c: CriterionData | undefined) => {
+    if (c?.finding && c.finding.endPos > c.finding.startPos) {
+      setHoverRange({
+        startPos: c.finding.startPos,
+        endPos: c.finding.endPos,
+        passed: c.finding.passed,
+      });
+    } else {
+      setHoverRange(null);
+    }
+  };
+
+  const focusCriterion = (id: string) => {
+    setFocusedCriterionId(id);
+    const card = cardRefs.current[id];
+    card?.focus();
+    showFinding(scoredCriteria.find((c) => c.id === id));
+  };
+
+  const focusNextCriterion = (fromId: string) => {
+    const idx = scoredCriteria.findIndex((c) => c.id === fromId);
+    const next = scoredCriteria[idx + 1];
+    if (next) {
+      // Defer so the current keydown finishes before the next card takes focus.
+      window.setTimeout(() => focusCriterion(next.id), 0);
+    }
   };
 
   // The gate used to be read only when the sheet opened. It now loads with the
@@ -304,6 +436,37 @@ export function ReviewWorkspace({
       live = false;
     };
   }, [request.id, annotations.length, criteria]);
+
+  // Land in the criteria pane on the first card. The fly-through starts there.
+  useEffect(() => {
+    const first = criteria[0]?.id;
+    if (!first) return;
+    setRightOpen(true);
+    const id = window.setTimeout(() => {
+      const card = cardRefs.current[first];
+      if (!card) return;
+      card.focus();
+      setFocusedCriterionId(first);
+      const row = criteria.find((c) => c.id === first);
+      if (row?.finding && row.finding.endPos > row.finding.startPos) {
+        setHoverRange({
+          startPos: row.finding.startPos,
+          endPos: row.finding.endPos,
+          passed: row.finding.passed,
+        });
+      }
+    }, 0);
+    return () => window.clearTimeout(id);
+    // Only on a new request — a refresh must not steal the composer cursor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [request.id]);
+
+  useEffect(() => {
+    if (!hoverRange) return;
+    const el = artifactRef.current?.querySelector('[data-judge-hl]') as HTMLElement | null;
+    if (!el) return;
+    el.scrollIntoView({ block: 'nearest' });
+  }, [hoverRange, focusedCriterionId]);
 
   /**
    * Go to the next ranked item, or to the queue when there is none.
@@ -391,10 +554,30 @@ export function ReviewWorkspace({
     });
   };
 
+  const compareAvailable = request.round > 1;
+  const budgetReached = request.round >= request.roundBudget;
+  const rejectBlocked = request.budgetExhausted;
+
+  const fireMainVerdict = () => {
+    if (shippingRef.current) return;
+    if (unscored > 0) {
+      setError(`Score all criteria to proceed — ${unscored} left`);
+      return;
+    }
+    if (shouldReject) {
+      if (rejectBlocked) return;
+      shipVerdict(unresolved.length > 0 ? 'reject_corrections' : 'reject_rerun');
+      return;
+    }
+    shipVerdict('approve', ackNeeded);
+  };
+  mainVerdictRef.current = fireMainVerdict;
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.repeat) return;
-      if ((e.target as HTMLElement)?.closest('input,textarea,[contenteditable]')) return;
+      const target = e.target;
+      if (target instanceof HTMLElement && target.closest('input,textarea,[contenteditable]')) return;
       if (e.key === 'Escape') {
         setComposer(null);
         setEditing(null);
@@ -419,21 +602,31 @@ export function ReviewWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const compareAvailable = request.round > 1;
-  const budgetReached = request.round >= request.roundBudget;
-  const rejectBlocked = request.budgetExhausted;
-  // The judge does not exist yet (VOBO-176, VOBO-198). The empty state links to
-  // the queue rather than to a settings screen that could not configure one.
-  const queueHref = `/admin/queues/${encodeURIComponent(request.queueSlug)}?project=${encodeURIComponent(
-    request.projectSlug
-  )}`;
+  const judgeStatus = machineReview?.withheld
+    ? 'hidden'
+    : machineReview?.pending
+      ? 'pending'
+      : machineReview?.failed
+        ? 'failed'
+        : null;
 
-  mainVerdictRef.current = () => {
-    if (shippingRef.current) return;
-    if (unresolved.length > 0) {
-      if (!rejectBlocked) shipVerdict('reject_corrections');
-    } else if (unscored === 0) shipVerdict('approve', ackNeeded);
-  };
+  const verdictDisabled =
+    shipping ||
+    unscored > 0 ||
+    (shouldReject && rejectBlocked) ||
+    (!shouldReject && Boolean(gateInfo?.blocked));
+
+  const verdictTitle = unscored > 0
+    ? `Score all criteria to proceed — ${unscored} left`
+    : shouldReject
+      ? rejectBlocked
+        ? 'This request already used the last policy round'
+        : unresolved.length > 0
+          ? `Ships ${unresolved.length} anchored correction(s) with the rejection`
+          : 'Reject and rerun without corrections'
+      : gateInfo?.blocked
+        ? gateInfo.reasons[0]
+        : 'Seals the content hash and ships a signed decision';
 
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', height: '100%' }}>
@@ -503,7 +696,7 @@ export function ReviewWorkspace({
           </Link>
         )}
         <div style={{ flex: 1 }} />
-        {gateInfo?.blocked && (
+        {gateInfo?.blocked && !shouldReject && (
           <span
             title={gateInfo.reasons.join(' · ')}
             style={{ fontSize: 12, color: 'var(--slate-500)', maxWidth: 260 }}
@@ -511,51 +704,21 @@ export function ReviewWorkspace({
             {gateInfo.reasons[0]}
           </span>
         )}
-        {/* The verdicts live here. A modal that repeated the same four choices
-            made every decision cost two. */}
-        {unresolved.length > 0 ? (
-          <button
-            type="button"
-            onClick={() => shipVerdict('reject_corrections')}
-            className="ds-btn ds-btn--default"
-            disabled={shipping || rejectBlocked}
-            title={
-              rejectBlocked
-                ? 'This request already used the last policy round'
-                : `Ships ${unresolved.length} anchored correction(s) with the rejection`
-            }
-          >
-            Reject with corrections ({unresolved.length})
-            <span style={kbdSolid}>⌘↵</span>
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => shipVerdict('approve', ackNeeded)}
-            className="ds-btn ds-btn--default"
-            disabled={shipping || unscored > 0}
-            title={
-              unscored > 0
-                ? `Score all criteria to proceed — ${unscored} left`
-                : 'Seals the content hash and ships a signed decision'
-            }
-          >
-            Approve — seal content hash
-            <span style={kbdSolid}>⌘↵</span>
-          </button>
-        )}
         <button
           type="button"
-          onClick={() => shipVerdict('reject_rerun')}
-          className="ds-btn ds-btn--outline"
-          disabled={shipping || rejectBlocked}
-          title={
-            rejectBlocked
-              ? 'This request already used the last policy round'
-              : 'Rerun without corrections — the model gets no anchored notes'
-          }
+          data-testid="verdict-button"
+          onClick={fireMainVerdict}
+          className="ds-btn"
+          disabled={verdictDisabled}
+          title={verdictTitle}
+          style={{
+            background: shouldReject ? 'var(--red-600)' : 'var(--green-600)',
+            color: '#fff',
+            border: `1px solid ${shouldReject ? 'var(--red-600)' : 'var(--green-600)'}`,
+          }}
         >
-          Reject — rerun
+          {shouldReject ? 'Reject' : 'Accept'}
+          <span style={kbdSolid}>⌘↵</span>
         </button>
         <button
           type="button"
@@ -866,16 +1029,29 @@ export function ReviewWorkspace({
                   <div key={p.start} style={{ fontSize: 15, lineHeight: 1.8, color: 'var(--slate-800)', marginBottom: 18, whiteSpace: 'pre-wrap' }}>
                     {p.segs.map((seg) => (
                       <span
-                        key={seg.start}
+                        key={`${seg.start}-${seg.pending ? 'p' : ''}-${seg.judge ?? ''}-${seg.ann?.id ?? ''}`}
                         data-seg-start={seg.start}
+                        data-judge-hl={seg.judge ? '1' : undefined}
                         style={
                           seg.ann
                             ? annStyle(seg.ann)
                             : seg.pending
                               ? pendingStyle
-                              : undefined
+                              : seg.judge === 'pass'
+                                ? judgePassStyle
+                                : seg.judge === 'fail'
+                                  ? judgeFailStyle
+                                  : undefined
                         }
-                        title={seg.ann ? seg.ann.body : seg.pending ? 'Selected — write the comment' : undefined}
+                        title={
+                          seg.ann
+                            ? seg.ann.body
+                            : seg.pending
+                              ? 'Selected — write the comment'
+                              : seg.judge
+                                ? `Judge: ${seg.judge}`
+                                : undefined
+                        }
                       >
                         {seg.text}
                       </span>
@@ -890,6 +1066,7 @@ export function ReviewWorkspace({
         {/* Right: review rail */}
         {rightOpen ? (
           <div
+            ref={railRef}
             style={{
               width: 320,
               flex: 'none',
@@ -930,39 +1107,11 @@ export function ReviewWorkspace({
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0 4px' }}>
-                <span style={sectionHead}>Machine review</span>
-                <div style={{ flex: 1 }} />
-                <span
-                  style={{ fontSize: 12, color: 'var(--slate-500)' }}
-                  title="The judge score stands in for model confidence in routing. It is never a verdict."
-                >
-                  —
-                </span>
-              </div>
-              <div
-                style={{
-                  border: '1px solid var(--border)',
-                  borderRadius: 8,
-                  padding: 12,
-                  fontSize: 12,
-                  color: 'var(--slate-500)',
-                  lineHeight: 1.5,
-                }}
-              >
-                No machine review on this version. The judge does not run yet — no queue can turn
-                one on.{' '}
-                <Link
-                  href={queueHref}
-                  style={{ color: 'var(--blue-700)', textDecoration: 'none', fontWeight: 500 }}
-                >
-                  Open the queue page
-                </Link>{' '}
-                for the policy that governs this review.
-              </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0 4px' }}>
                 <span style={sectionHead}>Criteria</span>
                 <div style={{ flex: 1 }} />
+                {judgeStatus && (
+                  <span style={{ fontSize: 12, color: 'var(--slate-500)' }}>judge {judgeStatus}</span>
+                )}
                 <span
                   style={{ fontSize: 12, color: 'var(--slate-500)' }}
                   title="Policy version in effect for this review — stamped into the signed event"
@@ -970,53 +1119,164 @@ export function ReviewWorkspace({
                   {request.policyLabel}
                 </span>
               </div>
-              {criteria.map((c) => (
-                <div
-                  key={c.id}
-                  style={{
-                    border: '1px solid var(--border)',
-                    borderRadius: 8,
-                    padding: 10,
-                    display: 'flex',
-                    flexDirection: 'column',
-                    gap: 8,
-                  }}
-                >
-                  <span style={{ fontSize: 13, fontWeight: 500 }} title={c.description ?? ''}>
-                    {c.title}
-                  </span>
-                  <div style={{ display: 'flex', gap: 6 }}>
-                    {(['pass', 'fail', 'na'] as const).map((v) => {
-                      const active = c.verdict === v;
-                      const color =
-                        v === 'pass'
-                          ? { bg: 'var(--green-100)', fg: 'var(--green-900)' }
-                          : v === 'fail'
-                            ? { bg: 'var(--red-100)', fg: 'var(--red-900)' }
-                            : { bg: 'var(--slate-100)', fg: 'var(--slate-600)' };
-                      return (
+              {scoredCriteria.map((c) => {
+                const hasAi = Boolean(c.finding) || c.score != null;
+                const expanded = !hasAi || Boolean(openIds[c.id]);
+                const focused = focusedCriterionId === c.id;
+                const borderColor =
+                  c.verdict === 'pass'
+                    ? 'var(--green-500)'
+                    : c.verdict === 'fail'
+                      ? 'var(--red-500)'
+                      : 'var(--border)';
+                const scoreColor =
+                  c.finding?.passed === true
+                    ? 'var(--green-900)'
+                    : c.finding?.passed === false
+                      ? 'var(--red-900)'
+                      : 'var(--slate-500)';
+                return (
+                  <div
+                    key={c.id}
+                    ref={(el) => {
+                      cardRefs.current[c.id] = el;
+                    }}
+                    data-testid={`criterion-${c.id}`}
+                    data-criterion-card={c.id}
+                    tabIndex={0}
+                    onFocus={() => {
+                      setFocusedCriterionId(c.id);
+                      showFinding(c);
+                    }}
+                    onMouseEnter={() => showFinding(c)}
+                    onMouseLeave={() => {
+                      if (focusedCriterionId === c.id) showFinding(c);
+                      else {
+                        const focusedRow = scoredCriteria.find((row) => row.id === focusedCriterionId);
+                        showFinding(focusedRow);
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.repeat) return;
+                      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') return;
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        setCriterion(c.id, 'pass');
+                        focusNextCriterion(c.id);
+                      }
+                      if (e.key === 'Backspace') {
+                        e.preventDefault();
+                        setCriterion(c.id, 'fail');
+                        focusNextCriterion(c.id);
+                      }
+                    }}
+                    style={{
+                      border: `1px solid ${focused ? 'var(--blue-500)' : borderColor}`,
+                      boxShadow: focused ? '0 0 0 2px color-mix(in srgb, var(--blue-500) 25%, transparent)' : undefined,
+                      borderRadius: 8,
+                      padding: 10,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 8,
+                      outline: 'none',
+                      background: focused ? 'var(--slate-50)' : '#fff',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      {hasAi && (
                         <button
-                          key={v}
                           type="button"
-                          onClick={() => setCriterion(c.id, v)}
+                          tabIndex={-1}
+                          title={expanded ? 'Hide criterion detail' : 'Show criterion detail'}
+                          aria-expanded={expanded}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setOpenIds((prev) => ({ ...prev, [c.id]: !prev[c.id] }));
+                          }}
                           style={{
+                            width: 22,
+                            height: 22,
+                            flex: 'none',
+                            border: '1px solid var(--border)',
                             borderRadius: 6,
-                            padding: '4px 12px',
-                            fontSize: 12,
-                            fontWeight: 500,
+                            background: '#fff',
                             cursor: 'pointer',
-                            border: active ? `1px solid ${color.fg}` : '1px solid var(--border)',
-                            background: active ? color.bg : '#fff',
-                            color: active ? color.fg : 'var(--slate-600)',
+                            color: 'var(--slate-600)',
+                            fontSize: 11,
+                            lineHeight: 1,
                           }}
                         >
-                          {v === 'na' ? 'N/A' : v === 'pass' ? 'Pass' : 'Fail'}
+                          {expanded ? '▾' : '▸'}
                         </button>
-                      );
-                    })}
+                      )}
+                      <span
+                        style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.3, flex: 1, minWidth: 0 }}
+                        title={c.description ?? ''}
+                      >
+                        {c.title}
+                      </span>
+                      {(localVerdict[c.id] || c.source === 'human') && (
+                        <span style={{ fontSize: 10, color: 'var(--slate-500)' }}>you</span>
+                      )}
+                      {hasAi && (
+                        <span
+                          data-testid={`confidence-${c.id}`}
+                          title="Model confidence that this criterion passed"
+                          style={{
+                            fontSize: 12,
+                            fontWeight: 600,
+                            color: scoreColor,
+                            fontVariantNumeric: 'tabular-nums',
+                            flex: 'none',
+                          }}
+                        >
+                          {formatScore(c.score)}
+                        </span>
+                      )}
+                    </div>
+                    {expanded && (
+                      <>
+                        {hasAi && c.finding?.note && (
+                          <span style={{ fontSize: 12, color: 'var(--slate-600)', lineHeight: 1.45 }}>
+                            {c.finding.note}
+                          </span>
+                        )}
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          {(['pass', 'fail', 'na'] as const).map((v) => {
+                            const active = c.verdict === v;
+                            const color =
+                              v === 'pass'
+                                ? { bg: 'var(--green-100)', fg: 'var(--green-900)' }
+                                : v === 'fail'
+                                  ? { bg: 'var(--red-100)', fg: 'var(--red-900)' }
+                                  : { bg: 'var(--slate-100)', fg: 'var(--slate-600)' };
+                            return (
+                              <button
+                                key={v}
+                                type="button"
+                                tabIndex={-1}
+                                onClick={() => setCriterion(c.id, v)}
+                                style={{
+                                  borderRadius: 6,
+                                  padding: '4px 12px',
+                                  fontSize: 12,
+                                  fontWeight: 500,
+                                  cursor: 'pointer',
+                                  border: active ? `1px solid ${color.fg}` : '1px solid var(--border)',
+                                  background: active ? color.bg : '#fff',
+                                  color: active ? color.fg : 'var(--slate-600)',
+                                }}
+                              >
+                                {v === 'na' ? 'N/A' : v === 'pass' ? 'Pass' : 'Fail'}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0 4px' }}>
                 <span style={sectionHead}>Comments</span>
@@ -1115,7 +1375,7 @@ export function ReviewWorkspace({
 
               {annotations.length === 0 && !composer && (
                 <span style={{ fontSize: 12, color: 'var(--slate-400)', lineHeight: 1.5 }}>
-                  No comments yet — select a range in the artifact, or confirm a machine finding.
+                  No comments yet — select a range in the artifact.
                 </span>
               )}
 

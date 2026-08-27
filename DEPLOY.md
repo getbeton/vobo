@@ -83,6 +83,25 @@ exist — Mara Kim, Jonas Størm, Ana López — and a pending invite on the pro
 `scripts/purge-demo-members.mjs` removes those memberships; it keeps the user rows, because they
 author decisions and annotations on requests that stay.
 
+## Judge (VOBO-30)
+
+The LLM judge is off until a queue policy sets `judgeEnabled`. The BYO key is an env var, never a
+policy field:
+
+| Var | What |
+|---|---|
+| `VOBO_JUDGE_OPENAI_API_KEY` | OpenAI-compatible key. PICO uses the pico-openclaw platform key. |
+| `VOBO_JUDGE_MODEL` | Optional. Default in policy is `gpt-4o-mini`. |
+
+After deploy, turn it on for the dogfood queue and backfill existing open versions:
+
+```bash
+POSTGRES_URL=... node scripts/enable-pico-judge.mjs
+POSTGRES_URL=... node scripts/backfill-judge-runs.mjs
+```
+
+The worker picks up pending runs on its 5s loop. Findings land in the Machine review strip.
+
 ## Smoke check
 
 ```bash

@@ -1,0 +1,5 @@
+{
+  "voice": { "precision": 0.7, "recall": 0.7 },
+  "factual": { "precision": 0.7, "recall": 0.7 },
+  "subject": { "precision": 0.6, "recall": 0.6 }
+}

@@ -118,7 +118,7 @@ adjudication UI in the MVP and `blindN` defaults to 0.
 ## Known gaps
 
 - No adjudication UI (blind-N is schema-only).
-- No judge/pre-annotation — that is the paid tier and the next obvious build.
+- Judge/pre-annotation shipped in VOBO-30. Enable it per queue; BYO key is `VOBO_JUDGE_OPENAI_API_KEY`.
 - Markdown is the only artifact modality; CSV/image/code modalities are designed, not built.
 - `get_review` returns versions and events but not anchor states; consumers read anchors through
   `get_corrections`.

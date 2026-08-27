@@ -14,6 +14,7 @@ import { appendEvent, DbOrTx, Db } from './eventlog';
 import { classify, applyConfirmation } from '@/lib/anchoring/classify';
 import { parsePolicyConfig, PolicyConfig } from './policy';
 import { getStorage } from '@/lib/storage';
+import { enqueueJudgeRun } from '@/lib/judge/enqueue';
 
 export class ApiProblem extends Error {
   constructor(
@@ -134,6 +135,12 @@ export async function createReview(db: Db, input: CreateReviewInput) {
       version: 1,
       content_hash: hash,
       author: version.authorLabel,
+    });
+
+    await enqueueJudgeRun(tx, {
+      requestId: request.id,
+      versionId: version.id,
+      versionNumber: 1,
     });
 
     try {
@@ -321,6 +328,11 @@ export async function submitVersion(db: Db, input: SubmitVersionInput) {
       content_hash: hash,
       author: version.authorLabel,
       responses: input.responses ?? [],
+    });
+    await enqueueJudgeRun(tx, {
+      requestId: request.id,
+      versionId: version.id,
+      versionNumber: nextNumber,
     });
     await appendEvent(tx, request.id, 'anchors.classified', {
       version: nextNumber,

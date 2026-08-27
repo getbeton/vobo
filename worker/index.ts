@@ -1,6 +1,7 @@
 import { db, client } from '@/lib/db/drizzle';
 import { dispatchDue } from '@/lib/core/webhooks';
 import { expireLeases, applySlaTimeouts } from '@/lib/core/queue';
+import { dispatchDueJudgeRuns } from '@/lib/judge/run';
 
 /**
  * The Vobo worker: webhook delivery (10s/60s/180s ladder, DLQ), lease-expiry
@@ -18,6 +19,8 @@ async function deliveryLoop() {
     try {
       const sent = await dispatchDue(db);
       if (sent > 0) console.log(`[worker] delivered ${sent} webhook(s)`);
+      const judged = await dispatchDueJudgeRuns(db);
+      if (judged > 0) console.log(`[worker] completed ${judged} judge run(s)`);
     } catch (err) {
       console.error('[worker] delivery loop error:', err);
     }
