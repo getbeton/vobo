@@ -15,6 +15,8 @@ import {
 import { getVerifiedChain } from '@/lib/core/eventlog';
 import { contentHash } from '@/lib/core/events';
 import { listFailingRequests } from '@/lib/core/failing';
+import { artifactVersions, reviewRequests } from '@/lib/db/schema';
+import { and, eq } from 'drizzle-orm';
 
 const V1 = `Subject: quick question about your review stack
 
@@ -750,6 +752,94 @@ describe('VOBO-284: Resolve is terminal for comments and versioned corrections',
       userId: fx.userId,
       reason: 'drop from history',
     });
+  });
+});
+
+describe('VOBO-289: Accept seals a chosen older version', () => {
+  async function round2WithOpenComment() {
+    const { request } = await baseCreate();
+    const v1 = await db.query.artifactVersions.findFirst({
+      where: and(eq(artifactVersions.requestId, request.id), eq(artifactVersions.versionNumber, 1)),
+    });
+    expect(v1).toBeTruthy();
+    await reviewAndReject(request.id);
+    await submitVersion(db, {
+      projectId: fx.projectId,
+      customerRequestId: request.customerRequestId,
+      contentMd: V2_FIXES_ONE,
+    });
+    await claim(db, request.id, fx.userId);
+    const start = V2_FIXES_ONE.indexOf('rare tool');
+    await addComment(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      body: 'Still a superlative.',
+      startPos: start,
+      endPos: start + 'rare tool'.length,
+    });
+    return { request, v1: v1! };
+  }
+
+  it('Accept of v1 on round 2 with an open comment seals v1', async () => {
+    const { request, v1 } = await round2WithOpenComment();
+    for (const cid of fx.criterionIds) {
+      await setCriterionVerdict(db, {
+        requestId: request.id,
+        criterionId: cid,
+        userId: fx.userId,
+        verdict: 'pass',
+      });
+    }
+    const shipped = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'approve',
+      acceptedVersionId: v1.id,
+    });
+    expect(shipped.status).toBe('accepted');
+    expect(shipped.sealedHash).toBe(v1.contentHash);
+    const [row] = await db
+      .select()
+      .from(reviewRequests)
+      .where(eq(reviewRequests.id, request.id));
+    expect(row.acceptedVersionId).toBe(v1.id);
+    expect(row.acceptedHash).toBe(v1.contentHash);
+  });
+
+  it('unscored criteria still block Accept of v1', async () => {
+    const { request, v1 } = await round2WithOpenComment();
+    await expect(
+      ship(db, {
+        requestId: request.id,
+        userId: fx.userId,
+        kind: 'approve',
+        acceptedVersionId: v1.id,
+      })
+    ).rejects.toMatchObject({ code: 'criteria_unscored' });
+  });
+
+  it('Reject ignores acceptedVersionId and still needs corrections', async () => {
+    const { request, v1 } = await round2WithOpenComment();
+    for (const cid of fx.criterionIds) {
+      await setCriterionVerdict(db, {
+        requestId: request.id,
+        criterionId: cid,
+        userId: fx.userId,
+        verdict: 'pass',
+      });
+    }
+    const shipped = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'reject_corrections',
+      acceptedVersionId: v1.id,
+    });
+    expect(shipped.status).toBe('rejected');
+    const [row] = await db
+      .select()
+      .from(reviewRequests)
+      .where(eq(reviewRequests.id, request.id));
+    expect(row.acceptedVersionId).toBeNull();
   });
 });
 
