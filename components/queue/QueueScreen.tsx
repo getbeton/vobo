@@ -4,6 +4,7 @@ import { useEffect, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { archiveRequestsAction, claimAction, releaseAction } from '@/lib/actions/review';
+import { reviewHref, type QueueRef } from '@/lib/shell/crumbs';
 
 /**
  * Reviewer Queue — verbatim port of the prototype's queue screen:
@@ -203,6 +204,7 @@ export function QueueScreen({
   canArchive = false,
   archivedHref = '/queue/archived',
   failingHref = null,
+  queueRef = null,
 }: {
   rows: QueueRowData[];
   nextUp: QueueRowData | null;
@@ -213,6 +215,8 @@ export function QueueScreen({
   archivedHref?: string;
   /** Operator-only. Always visible when set — not nested in the bulk bar. */
   failingHref?: string | null;
+  /** Current queue. Used to keep project/queue/env on Proceed. */
+  queueRef?: QueueRef | null;
 }) {
   const router = useRouter();
   const [focusIdx, setFocusIdx] = useState(0);
@@ -263,13 +267,14 @@ export function QueueScreen({
   const openOrClaim = (row: QueueRowData) => {
     setError(null);
     startTransition(async () => {
+      const href = queueRef ? reviewHref(row.id, queueRef) : `/review/${row.id}`;
       if (row.lease?.mine || row.status === 'claimed') {
-        router.push(`/review/${row.id}`);
+        router.push(href);
         return;
       }
       const res = await claimAction(row.id);
       if (res.ok) {
-        router.push(`/review/${row.id}`);
+        router.push(href);
       } else if (res.code === 'claim_race' || res.code === 'not_claimable') {
         setError('Claimed by another reviewer just now');
         setFocusIdx((i) => Math.min(i + 1, rows.length - 1));

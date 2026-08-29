@@ -10,11 +10,14 @@ import {
   criteria,
   criteriaVerdicts,
   policyVersions,
+  queues,
+  projects,
 } from '@/lib/db/schema';
 import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
 import { NoAccess } from '@/components/shell/NoAccess';
 import { parsePolicyConfig } from '@/lib/core/policy';
 import { VersionCompare } from '@/components/review/VersionCompare';
+import { mergeReviewSearch, reviewHref } from '@/lib/shell/crumbs';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,7 +26,7 @@ export default async function ComparePage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ l?: string; r?: string }>;
+  searchParams: Promise<{ l?: string; r?: string; project?: string; queue?: string; env?: string }>;
 }) {
   const { id } = await params;
   const sp = await searchParams;
@@ -35,12 +38,29 @@ export default async function ComparePage({
   const wsId = await workspaceOfRequestOrNull(request.id);
   if (wsId === null || !(await canReview(user.id, wsId))) return <NoAccess />;
 
+  const queue = await db.query.queues.findFirst({ where: eq(queues.id, request.queueId) });
+  const project = await db.query.projects.findFirst({ where: eq(projects.id, request.projectId) });
+  const queueRef =
+    project && queue
+      ? {
+          projectSlug: project.slug,
+          queueSlug: queue.slug,
+          environment: queue.environment,
+        }
+      : null;
+  if (queueRef) {
+    const filled = mergeReviewSearch(sp, queueRef);
+    if (filled.changed) redirect(`/review/${id}/compare?${filled.search}`);
+  }
+
   const versions = await db
     .select()
     .from(artifactVersions)
     .where(eq(artifactVersions.requestId, request.id))
     .orderBy(asc(artifactVersions.versionNumber));
-  if (versions.length < 2) redirect(`/review/${request.id}`);
+  if (versions.length < 2) {
+    redirect(queueRef ? reviewHref(id, queueRef) : `/review/${id}`);
+  }
 
   const rNum = Math.min(Number(sp.r) || request.round, versions.length);
   const lNum = Math.min(Number(sp.l) || Math.max(1, rNum - 1), rNum - 1) || 1;
@@ -80,6 +100,9 @@ export default async function ComparePage({
         roundBudget: policy?.roundBudget ?? 3,
         status: request.status,
         budgetExhausted: Boolean(request.budgetExhaustedAt),
+        projectSlug: queueRef?.projectSlug ?? '',
+        queueSlug: queueRef?.queueSlug ?? '',
+        environment: queueRef?.environment ?? 'production',
       }}
       left={{
         number: left.versionNumber,

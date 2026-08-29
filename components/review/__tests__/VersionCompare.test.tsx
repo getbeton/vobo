@@ -59,6 +59,9 @@ function renderCompare() {
         roundBudget: 3,
         status: 'claimed',
         budgetExhausted: false,
+        projectSlug: 'pico',
+        queueSlug: 'pico-cold-email',
+        environment: 'production',
       }}
       left={{ number: 1, content: LEFT, author: 'model', hash: 'aaaa1111', id: 'v1' }}
       right={{ number: 2, content: RIGHT, author: 'model', hash: 'bbbb2222', id: 'v2' }}

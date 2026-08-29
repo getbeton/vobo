@@ -20,11 +20,19 @@ import { NoAccess } from '@/components/shell/NoAccess';
 import { parsePolicyConfig } from '@/lib/core/policy';
 import { ReviewWorkspace } from '@/components/review/ReviewWorkspace';
 import { readFindings } from '@/lib/findings/read';
+import { mergeReviewSearch } from '@/lib/shell/crumbs';
 
 export const dynamic = 'force-dynamic';
 
-export default async function ReviewPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ReviewPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ project?: string; queue?: string; env?: string }>;
+}) {
   const { id } = await params;
+  const sp = await searchParams;
   const user = await getUser();
   if (!user) redirect('/auth');
 
@@ -39,6 +47,14 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
   // review, so both slugs travel with the request.
   const queue = await db.query.queues.findFirst({ where: eq(queues.id, request.queueId) });
   const project = await db.query.projects.findFirst({ where: eq(projects.id, request.projectId) });
+  if (project && queue) {
+    const filled = mergeReviewSearch(sp, {
+      projectSlug: project.slug,
+      queueSlug: queue.slug,
+      environment: queue.environment,
+    });
+    if (filled.changed) redirect(`/review/${id}?${filled.search}`);
+  }
 
   const version = await db.query.artifactVersions.findFirst({
     where: and(
@@ -110,6 +126,7 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
         source: request.source,
         queueSlug: queue?.slug ?? '',
         projectSlug: project?.slug ?? '',
+        environment: queue?.environment ?? 'production',
         policyLabel: pv ? `policy v${pv.version}` : '',
         roundBudget: policy?.roundBudget ?? 3,
         budgetExhausted: Boolean(request.budgetExhaustedAt),

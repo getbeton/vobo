@@ -125,6 +125,11 @@ export default async function QueuePage({
       canArchive={canArchive}
       archivedHref={archivedHref}
       failingHref={canArchive ? failingHref(params) : null}
+      queueRef={{
+        projectSlug: resolved.project?.slug ?? '',
+        queueSlug: queue.slug,
+        environment,
+      }}
     />
   );
 }
