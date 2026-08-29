@@ -7,6 +7,9 @@ import {
   optionsWithSelection,
   selectedLabel,
   selectProject,
+  queueListHref,
+  reviewHref,
+  mergeReviewSearch,
 } from '../crumbs';
 
 const PICO = {
@@ -128,5 +131,54 @@ describe('project selection follows the resolver', () => {
 
   it('returns null when the workspace has no projects', () => {
     expect(selectProject([], readSelection({ queue: 'x' }))).toBeNull();
+  });
+});
+
+const CRO = {
+  projectSlug: 'pico',
+  queueSlug: 'pico-cro-w2b-cold-email',
+  environment: 'production' as const,
+};
+
+describe('VOBO-269: review and queue href helpers', () => {
+  it('queueListHref is the three-param list, never bare /queue', () => {
+    expect(queueListHref(CRO)).toBe(
+      '/queue?project=pico&queue=pico-cro-w2b-cold-email&env=production'
+    );
+  });
+
+  it('reviewHref carries the same three params', () => {
+    expect(reviewHref('abc', CRO)).toBe(
+      '/review/abc?project=pico&queue=pico-cro-w2b-cold-email&env=production'
+    );
+  });
+
+  it('reviewHref compare keeps l and r', () => {
+    expect(reviewHref('abc', CRO, { compare: true, l: 1, r: 2 })).toBe(
+      '/review/abc/compare?project=pico&queue=pico-cro-w2b-cold-email&env=production&l=1&r=2'
+    );
+  });
+
+  it('mergeReviewSearch fills missing project/queue/env and keeps l/r', () => {
+    const filled = mergeReviewSearch({ l: '1', r: '2' }, CRO);
+    expect(filled.changed).toBe(true);
+    expect(filled.search).toBe(
+      'project=pico&queue=pico-cro-w2b-cold-email&env=production&l=1&r=2'
+    );
+  });
+
+  it('mergeReviewSearch is a no-op when the three params are already set', () => {
+    const filled = mergeReviewSearch(
+      { project: 'pico', queue: 'pico-cro-w2b-cold-email', env: 'production', l: '1', r: '2' },
+      CRO
+    );
+    expect(filled.changed).toBe(false);
+    expect(filled.search).toBe(
+      'project=pico&queue=pico-cro-w2b-cold-email&env=production&l=1&r=2'
+    );
+  });
+
+  it('bare /queue default is unchanged: empty selection still falls to the first project', () => {
+    expect(selectProject([ACME, PICO], readSelection({}))?.slug).toBe('acme');
   });
 });
