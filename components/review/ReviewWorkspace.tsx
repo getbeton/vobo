@@ -21,8 +21,11 @@ import {
   acceptSuggestionAction,
   rejectSuggestionAction,
   saveManualEditsAction,
+  rerunJudgeAction,
 } from '@/lib/actions/review';
 import { applyManualEdits } from '@/lib/core/manual-edits';
+import type { RemainingWork } from '@/lib/core/metrics';
+import { RemainingWorkChip } from '@/components/queue/RemainingWorkChip';
 import { SuggestionList, type SuggestionData } from './SuggestionLayer';
 
 export type { SuggestionData };
@@ -82,6 +85,8 @@ export interface MachineReviewData {
   pending: boolean;
   failed: boolean;
   overallScore: number | null;
+  runState?: 'pending' | 'running' | 'completed' | 'failed' | 'not_sampled' | null;
+  judgeEnabled?: boolean;
 }
 
 interface RequestData {
@@ -176,6 +181,7 @@ export function ReviewWorkspace({
   files,
   machineReview = null,
   suggestions = [],
+  remainingWork = null,
 }: {
   request: RequestData;
   contentMd: string;
@@ -187,6 +193,7 @@ export function ReviewWorkspace({
   files: Array<{ name: string; kind: string }>;
   machineReview?: MachineReviewData | null;
   suggestions?: SuggestionData[];
+  remainingWork?: RemainingWork | null;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -217,6 +224,7 @@ export function ReviewWorkspace({
     endPos: number;
     passed: boolean;
   } | null>(null);
+  const [confirmRerun, setConfirmRerun] = useState(false);
   const artifactRef = useRef<HTMLDivElement>(null);
   const leftRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
@@ -881,7 +889,20 @@ export function ReviewWorkspace({
       ? 'pending'
       : machineReview?.failed
         ? 'failed'
-        : null;
+        : machineReview?.runState === 'not_sampled'
+          ? 'not sampled'
+          : machineReview?.runState === 'completed'
+            ? 'done'
+            : null;
+
+  const runState = machineReview?.runState ?? null;
+  const rerunAllowed = Boolean(
+    machineReview?.judgeEnabled &&
+      runState &&
+      request.status !== 'accepted' &&
+      ['completed', 'failed', 'not_sampled', 'running', 'pending'].includes(runState)
+  );
+  const rerunBusy = runState === 'running' || runState === 'pending';
 
   const showSave = appliedSuggestions.length > 0;
   const showAccept = !showSave && (sealingPrior || !shouldReject);
@@ -997,6 +1018,7 @@ export function ReviewWorkspace({
         >
           ← Back to queue
         </Link>
+        {remainingWork && <RemainingWorkChip work={remainingWork} />}
         {unresolved.length > 0 && (
           <span
             style={{
@@ -1472,6 +1494,56 @@ export function ReviewWorkspace({
                 {judgeStatus && (
                   <span style={{ fontSize: 12, color: 'var(--slate-500)' }}>judge {judgeStatus}</span>
                 )}
+                {rerunAllowed &&
+                  (confirmRerun ? (
+                    <>
+                      <button
+                        type="button"
+                        className="ds-btn ds-btn--ghost"
+                        style={{ height: 28, fontSize: 12 }}
+                        onClick={() => {
+                          setConfirmRerun(false);
+                          setError(null);
+                          startTransition(async () => {
+                            const res = await rerunJudgeAction({
+                              requestId: request.id,
+                              versionId,
+                            });
+                            if (!res.ok) {
+                              setError(res.error);
+                              return;
+                            }
+                            router.refresh();
+                          });
+                        }}
+                      >
+                        Confirm rerun
+                      </button>
+                      <button
+                        type="button"
+                        className="ds-btn ds-btn--ghost"
+                        style={{ height: 28, fontSize: 12 }}
+                        onClick={() => setConfirmRerun(false)}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="ds-btn ds-btn--ghost"
+                      style={{ height: 28, fontSize: 12 }}
+                      disabled={rerunBusy}
+                      title={
+                        rerunBusy
+                          ? 'Judge is already running'
+                          : 'Run the machine judge again on this version'
+                      }
+                      onClick={() => setConfirmRerun(true)}
+                    >
+                      Rerun judge
+                    </button>
+                  ))}
                 <span
                   style={{ fontSize: 12, color: 'var(--slate-500)' }}
                   title="Policy version in effect for this review — stamped into the signed event"

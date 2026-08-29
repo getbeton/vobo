@@ -5,6 +5,7 @@ import {
   AnnotationData,
   CriterionData,
 } from '../ReviewWorkspace';
+import { remainingWork } from '@/lib/core/metrics';
 
 /**
  * VOBO-231. PR #5 fixed three things a reviewer can only see on screen: the
@@ -36,6 +37,7 @@ const createSuggestion = vi.fn(async () => ({ ok: true as const, data: { suggest
 const acceptSuggestion = vi.fn(async () => ({ ok: true as const }));
 const rejectSuggestion = vi.fn(async () => ({ ok: true as const }));
 const saveEdits = vi.fn(async () => ({ ok: true as const, data: { round: 2 } }));
+const rerunJudge = vi.fn(async () => ({ ok: true as const }));
 const routerPush = vi.fn();
 const routerRefresh = vi.fn();
 
@@ -56,6 +58,7 @@ vi.mock('@/lib/actions/review', () => ({
   acceptSuggestionAction: (...args: unknown[]) => acceptSuggestion(...args),
   rejectSuggestionAction: (...args: unknown[]) => rejectSuggestion(...args),
   saveManualEditsAction: (...args: unknown[]) => saveEdits(...args),
+  rerunJudgeAction: (...args: unknown[]) => rerunJudge(...args),
   gateAction: async () => ({ ok: true, data: { blocked: false, reasons: [], interstitials: [] } }),
 }));
 
@@ -865,6 +868,155 @@ describe('ReviewWorkspace — the single verdict button', () => {
     await waitFor(() => expect(ship).toHaveBeenCalledTimes(1));
     expect(ship.mock.calls[0][0]).toEqual(
       expect.objectContaining({ requestId: 'r1', kind: 'reject_rerun' })
+    );
+  });
+});
+
+describe('VOBO-296: remaining work on the workspace top bar', () => {
+  const work = remainingWork([
+    ...Array.from({ length: 15 }, () => ({ status: 'accepted' })),
+    ...Array.from({ length: 64 }, () => ({ status: 'open' })),
+    ...Array.from({ length: 2 }, () => ({ status: 'claimed' })),
+    ...Array.from({ length: 4 }, () => ({ status: 'rejected' })),
+  ]);
+
+  it('shows the same remaining/accepted pair as the queue', () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        remainingWork={work}
+      />
+    );
+    const chip = screen.getByTestId('remaining-work');
+    expect(chip.textContent).toBe('70 remaining · 15 accepted');
+    expect(chip.getAttribute('title')).toContain('rejected 4');
+    expect(screen.getByText('← Back to queue')).toBeTruthy();
+  });
+
+  it('after accept, remaining drops by one on refresh', () => {
+    const after = remainingWork([
+      ...Array.from({ length: 16 }, () => ({ status: 'accepted' })),
+      ...Array.from({ length: 63 }, () => ({ status: 'open' })),
+      ...Array.from({ length: 2 }, () => ({ status: 'claimed' })),
+      ...Array.from({ length: 4 }, () => ({ status: 'rejected' })),
+    ]);
+    render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, status: 'accepted' }}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        remainingWork={after}
+      />
+    );
+    expect(screen.getByTestId('remaining-work').textContent).toBe('69 remaining · 16 accepted');
+  });
+});
+
+describe('VOBO-298: Rerun judge control', () => {
+  beforeEach(() => {
+    rerunJudge.mockClear();
+  });
+
+  it('shows Rerun judge when the current run is completed', () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        machineReview={{
+          withheld: false,
+          pending: false,
+          failed: false,
+          overallScore: 0.5,
+          runState: 'completed',
+          judgeEnabled: true,
+        }}
+      />
+    );
+    expect(screen.getByRole('button', { name: 'Rerun judge' })).toBeTruthy();
+  });
+
+  it('disables Rerun judge while the run is running', () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        machineReview={{
+          withheld: false,
+          pending: true,
+          failed: false,
+          overallScore: null,
+          runState: 'running',
+          judgeEnabled: true,
+        }}
+      />
+    );
+    expect((screen.getByRole('button', { name: 'Rerun judge' }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
+  });
+
+  it('hides Rerun judge on an accepted request', () => {
+    render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, status: 'accepted' }}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        machineReview={{
+          withheld: false,
+          pending: false,
+          failed: false,
+          overallScore: 0.5,
+          runState: 'completed',
+          judgeEnabled: true,
+        }}
+      />
+    );
+    expect(screen.queryByRole('button', { name: 'Rerun judge' })).toBeNull();
+  });
+
+  it('does not call rerun until the reviewer confirms', async () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        machineReview={{
+          withheld: false,
+          pending: false,
+          failed: false,
+          overallScore: 0.5,
+          runState: 'completed',
+          judgeEnabled: true,
+        }}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Rerun judge' }));
+    expect(rerunJudge).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm rerun' }));
+    await waitFor(() =>
+      expect(rerunJudge).toHaveBeenCalledWith({ requestId: 'r1', versionId: 'v1' })
     );
   });
 });

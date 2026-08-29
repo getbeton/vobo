@@ -19,6 +19,7 @@ import {
 import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
 import { NoAccess } from '@/components/shell/NoAccess';
 import { parsePolicyConfig } from '@/lib/core/policy';
+import { remainingWorkForQueue } from '@/lib/core/remaining-work';
 import { ReviewWorkspace } from '@/components/review/ReviewWorkspace';
 import { readFindings } from '@/lib/findings/read';
 import { mergeReviewSearch } from '@/lib/shell/crumbs';
@@ -232,7 +233,10 @@ export default async function ReviewPage({
         pending: machine.run?.state === 'pending' || machine.run?.state === 'running',
         failed: machine.run?.state === 'failed',
         overallScore: machine.run?.overallScore ?? request.judgeOverallScore ?? null,
+        runState: machine.run?.state ?? null,
+        judgeEnabled: Boolean(policy?.judgeEnabled),
       }}
+      remainingWork={await remainingWorkForQueue(db, request.queueId)}
     />
   );
 }

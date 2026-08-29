@@ -811,6 +811,8 @@ export const judgeRuns = pgTable(
     lastAttemptAt: timestamp('last_attempt_at'),
     startedAt: timestamp('started_at'),
     completedAt: timestamp('completed_at'),
+    /** Increments on each reviewer rerun so ingest keys stay unique per attempt. */
+    rerunSeq: integer('rerun_seq').notNull().default(0),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (t) => [uniqueIndex('judge_runs_version_uq').on(t.versionId)]

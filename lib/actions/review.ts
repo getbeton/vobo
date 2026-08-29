@@ -31,6 +31,7 @@ import {
   rejectSuggestion,
   saveManualEdits,
 } from '@/lib/core/suggestions';
+import { rerunJudge } from '@/lib/judge/rerun';
 
 export type ActionResult<T = unknown> =
   | { ok: true; data?: T }
@@ -300,5 +301,18 @@ export const retireAction = wrap(
     const user = await guardReviewer(requestId);
     await retire(db, { requestId, annotationId, userId: user.id, reason });
     revalidatePath(`/review/${requestId}`);
+  }
+);
+
+export const rerunJudgeAction = wrap(
+  async (input: { requestId: string; versionId: string }) => {
+    const user = await guardReviewer(input.requestId);
+    const res = await rerunJudge(db, {
+      requestId: input.requestId,
+      versionId: input.versionId,
+      userId: user.id,
+    });
+    revalidatePath(`/review/${input.requestId}`);
+    return res;
   }
 );
