@@ -68,6 +68,12 @@ export const requestStatusEnum = pgEnum('request_status', [
 
 export const authorKindEnum = pgEnum('author_kind', ['model', 'human']);
 
+export const manualEditStatusEnum = pgEnum('manual_edit_status', [
+  'pending',
+  'applied',
+  'rejected',
+]);
+
 export const anchorStateEnum = pgEnum('anchor_state', [
   'new', // born this round
   'resolved',
@@ -480,6 +486,34 @@ export const annotations = pgTable(
   (t) => [index('annotations_request_idx').on(t.requestId)]
 );
 
+/**
+ * Suggestion rows on a version. Pending = old text still shown. Applied =
+ * folded into working text. Save writes one human version from applied rows.
+ */
+export const manualEdits = pgTable(
+  'manual_edits',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => reviewRequests.id),
+    baseVersionId: uuid('base_version_id')
+      .notNull()
+      .references(() => artifactVersions.id),
+    startPos: integer('start_pos').notNull(),
+    endPos: integer('end_pos').notNull(),
+    originalQuote: text('original_quote').notNull(),
+    replacement: text('replacement').notNull(),
+    status: manualEditStatusEnum('status').notNull().default('pending'),
+    createdBy: text('created_by')
+      .notNull()
+      .references(() => user.id),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    decidedAt: timestamp('decided_at'),
+  },
+  (t) => [index('manual_edits_request_status_idx').on(t.requestId, t.status)]
+);
+
 // Classification of every prior annotation against every later version.
 export const anchorStates = pgTable(
   'anchor_states',
@@ -777,6 +811,8 @@ export const judgeRuns = pgTable(
     lastAttemptAt: timestamp('last_attempt_at'),
     startedAt: timestamp('started_at'),
     completedAt: timestamp('completed_at'),
+    /** Increments on each reviewer rerun so ingest keys stay unique per attempt. */
+    rerunSeq: integer('rerun_seq').notNull().default(0),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (t) => [uniqueIndex('judge_runs_version_uq').on(t.versionId)]
@@ -1037,6 +1073,7 @@ export type ProducerKey = typeof producerKeys.$inferSelect;
 export type MachineFinding = typeof machineFindings.$inferSelect;
 export type JudgeRun = typeof judgeRuns.$inferSelect;
 export type JudgeRecord = typeof judgeRecords.$inferSelect;
+export type ManualEdit = typeof manualEdits.$inferSelect;
 export type DismissalMemory = typeof dismissalMemory.$inferSelect;
 
 export type WorkspaceDataWithMembers = Workspace & {

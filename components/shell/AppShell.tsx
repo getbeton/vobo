@@ -18,6 +18,7 @@ import {
   optionsWithSelection,
   selectedLabel,
   selectProject,
+  queueListHref,
   type ProjectOption,
 } from '@/lib/shell/crumbs';
 
@@ -172,7 +173,7 @@ const KEYMAP: Array<[string, string]> = [
   ['A', 'Anchor a correction on the selection'],
   ['C / D', 'Confirm / dismiss (with reason)'],
   ['1–5', 'Score the focused criterion'],
-  ['P / O / X', 'Persists / re-pin / retire (compare rail)'],
+  ['P / O / X', 'Persists / re-pin / retire (workspace rail)'],
   ['⌘Enter', 'Open the pre-submit sheet / ship'],
   ['Esc', 'Close composer or sheet'],
   ['?', 'This sheet'],
@@ -198,13 +199,6 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
-  const railItems = [
-    { icon: ListChecks, title: 'Reviewer queue', href: '/queue' },
-    { icon: History, title: 'Request timeline', href: '/requests' },
-    { icon: Activity, title: 'Convergence dashboard — coming soon', href: null as string | null },
-    { icon: Settings, title: 'Workspace, project & queue pages', href: '/admin' },
-  ];
-
   const searchParams = useSearchParams();
 
   // Selection comes from the URL, never from the first row. That mismatch is
@@ -214,6 +208,23 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
     queue: searchParams.get('queue'),
     env: searchParams.get('env'),
   });
+
+  const onReview = pathname.startsWith('/review/');
+  const reviewQueueHref =
+    onReview && selection.projectSlug && selection.queueSlug
+      ? queueListHref({
+          projectSlug: selection.projectSlug,
+          queueSlug: selection.queueSlug,
+          environment: selection.environment,
+        })
+      : '/queue';
+
+  const railItems = [
+    { icon: ListChecks, title: 'Reviewer queue', href: reviewQueueHref },
+    { icon: History, title: 'Request timeline', href: '/requests' },
+    { icon: Activity, title: 'Convergence dashboard — coming soon', href: null as string | null },
+    { icon: Settings, title: 'Workspace, project & queue pages', href: '/admin' },
+  ];
 
   const selectedProject = selectProject(data.projects, selection);
 
@@ -271,7 +282,7 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
         }}
       >
         <Link
-          href="/queue"
+          href={reviewQueueHref}
           style={{ fontWeight: 600, fontSize: 15, letterSpacing: '-.01em', color: 'inherit', textDecoration: 'none' }}
         >
           Vobo

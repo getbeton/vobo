@@ -4,6 +4,9 @@ import { useEffect, useState, useTransition } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { archiveRequestsAction, claimAction, releaseAction } from '@/lib/actions/review';
+import { reviewHref, type QueueRef } from '@/lib/shell/crumbs';
+import type { RemainingWork } from '@/lib/core/metrics';
+import { RemainingWorkChip } from './RemainingWorkChip';
 
 /**
  * Reviewer Queue — verbatim port of the prototype's queue screen:
@@ -203,6 +206,8 @@ export function QueueScreen({
   canArchive = false,
   archivedHref = '/queue/archived',
   failingHref = null,
+  queueRef = null,
+  remainingWork = null,
 }: {
   rows: QueueRowData[];
   nextUp: QueueRowData | null;
@@ -213,6 +218,9 @@ export function QueueScreen({
   archivedHref?: string;
   /** Operator-only. Always visible when set — not nested in the bulk bar. */
   failingHref?: string | null;
+  /** Current queue. Used to keep project/queue/env on Proceed. */
+  queueRef?: QueueRef | null;
+  remainingWork?: RemainingWork | null;
 }) {
   const router = useRouter();
   const [focusIdx, setFocusIdx] = useState(0);
@@ -263,13 +271,14 @@ export function QueueScreen({
   const openOrClaim = (row: QueueRowData) => {
     setError(null);
     startTransition(async () => {
+      const href = queueRef ? reviewHref(row.id, queueRef) : `/review/${row.id}`;
       if (row.lease?.mine || row.status === 'claimed') {
-        router.push(`/review/${row.id}`);
+        router.push(href);
         return;
       }
       const res = await claimAction(row.id);
       if (res.ok) {
-        router.push(`/review/${row.id}`);
+        router.push(href);
       } else if (res.code === 'claim_race' || res.code === 'not_claimable') {
         setError('Claimed by another reviewer just now');
         setFocusIdx((i) => Math.min(i + 1, rows.length - 1));
@@ -312,6 +321,7 @@ export function QueueScreen({
       <div style={{ maxWidth: 880, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 18, fontWeight: 600 }}>Reviewer queue</span>
+          {remainingWork && <RemainingWorkChip work={remainingWork} />}
           {failingHref && (
             <Link
               href={failingHref}
