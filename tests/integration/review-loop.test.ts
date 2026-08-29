@@ -322,6 +322,156 @@ describe('full regeneration loop with gates', () => {
   });
 });
 
+const ORPHAN_V2 = V1.replace(
+  "\n\nWe sincerely apologize for the interruption, but our 60-day goodwill window makes this the best tool you'll ever use.",
+  ''
+);
+
+async function scoreAllPass(requestId: string) {
+  for (const cid of fx.criterionIds) {
+    await setCriterionVerdict(db, {
+      requestId,
+      criterionId: cid,
+      userId: fx.userId,
+      verdict: 'pass',
+    });
+  }
+}
+
+async function round2Orphan() {
+  const { request } = await baseCreate();
+  const ann = await reviewAndReject(request.id);
+  const v2 = await submitVersion(db, {
+    projectId: fx.projectId,
+    customerRequestId: request.customerRequestId,
+    contentMd: ORPHAN_V2,
+  });
+  expect(v2.classifications).toMatchObject({ orphaned: 1 });
+  await claim(db, request.id, fx.userId);
+  await scoreAllPass(request.id);
+  return { request, v2, annotationId: ann.id };
+}
+
+async function round2Persisting() {
+  const { request } = await baseCreate();
+  const ann = await reviewAndReject(request.id);
+  const v2 = await submitVersion(db, {
+    projectId: fx.projectId,
+    customerRequestId: request.customerRequestId,
+    contentMd: V1 + '\n\nP.S. New unrelated line.',
+  });
+  expect(v2.classifications).toMatchObject({ persisting: 1 });
+  await claim(db, request.id, fx.userId);
+  await scoreAllPass(request.id);
+  return { request, v2, annotationId: ann.id };
+}
+
+/**
+ * VOBO-273. Jana: Resolve and C on a prior comment must unblock approve
+ * without Retire. These must fail on current staging (orphaned rows ignore
+ * confirmation and resolved_at).
+ */
+describe('VOBO-273: resolve/C on prior comments unblocks approve', () => {
+  it('orphan + C: approveGate opens and ship(approve) succeeds without retire', async () => {
+    const { request, v2, annotationId } = await round2Orphan();
+    await confirmResolution(db, request.id, annotationId, v2.version.id);
+
+    const gate = await approveGate(db, request.id, fx.userId);
+    expect(gate.blocked).toBe(false);
+    expect(gate.reasons.join(' ')).not.toMatch(/orphan/i);
+
+    const shipped = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'approve',
+      acknowledgeInterstitials: true,
+    });
+    expect(shipped.status).toBe('accepted');
+  });
+
+  it('orphan + comment Resolve: same as C (the Jana failure)', async () => {
+    const { request, annotationId } = await round2Orphan();
+    await resolveComment(db, request.id, annotationId, fx.userId);
+
+    const gate = await approveGate(db, request.id, fx.userId);
+    expect(gate.blocked).toBe(false);
+    expect(gate.reasons.join(' ')).not.toMatch(/orphan/i);
+
+    const shipped = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'approve',
+      acknowledgeInterstitials: true,
+    });
+    expect(shipped.status).toBe('accepted');
+  });
+
+  it('orphan with no human confirm still blocks; reason names Resolve/C; retire still unblocks', async () => {
+    const { request, annotationId } = await round2Orphan();
+
+    const blocked = await approveGate(db, request.id, fx.userId);
+    expect(blocked.blocked).toBe(true);
+    expect(blocked.reasons.join(' ')).toMatch(/orphan/i);
+    expect(blocked.reasons.join(' ')).toMatch(/resolve|\bC\b/i);
+
+    await retire(db, {
+      requestId: request.id,
+      annotationId,
+      userId: fx.userId,
+      reason: 'Paragraph removed — moot',
+    });
+    const after = await approveGate(db, request.id, fx.userId);
+    expect(after.blocked).toBe(false);
+  });
+
+  it('persisting, unconfirmed, still blocks with the ignored-them copy', async () => {
+    const { request } = await round2Persisting();
+    const gate = await approveGate(db, request.id, fx.userId);
+    expect(gate.blocked).toBe(true);
+    expect(gate.reasons.join(' ')).toContain('the model ignored them');
+  });
+
+  it('persisting + C: reviewer accepted the miss, approve is allowed', async () => {
+    const { request, v2, annotationId } = await round2Persisting();
+    await confirmResolution(db, request.id, annotationId, v2.version.id);
+
+    const gate = await approveGate(db, request.id, fx.userId);
+    expect(gate.blocked).toBe(false);
+
+    const shipped = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'approve',
+      acknowledgeInterstitials: true,
+    });
+    expect(shipped.status).toBe('accepted');
+  });
+
+  it('round 1: an unresolved new comment still blocks; Resolve still unblocks', async () => {
+    const { request } = await baseCreate();
+    await claim(db, request.id, fx.userId);
+    await addComment(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      body: 'Apology boilerplate.',
+      startPos: V1.indexOf('We sincerely apologize'),
+      endPos: V1.indexOf('ever use.') + 'ever use.'.length,
+    });
+    await scoreAllPass(request.id);
+
+    const blocked = await approveGate(db, request.id, fx.userId);
+    expect(blocked.blocked).toBe(true);
+    expect(blocked.reasons.join(' ')).toContain('new comment');
+
+    const chain = await getVerifiedChain(db, request.id);
+    const annEvent = chain.rows.find((r) => r.type === 'annotation.created')!;
+    await resolveComment(db, request.id, (annEvent.payload as { annotation_id: string }).annotation_id, fx.userId);
+
+    const open = await approveGate(db, request.id, fx.userId);
+    expect(open.blocked).toBe(false);
+  });
+});
+
 describe('queue: ranking, claim race, lease expiry, SLA', () => {
   it('two concurrent claims — exactly one wins', async () => {
     const { request } = await baseCreate();
