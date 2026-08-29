@@ -27,6 +27,9 @@ const ship = vi.fn(async (_payload: unknown) => ({
   ok: true as const,
   data: { nextRequestId: null as string | null, nextLeaseMine: false },
 }));
+const claim = vi.fn(async () => ({ ok: true as const }));
+const routerPush = vi.fn();
+const routerRefresh = vi.fn();
 
 vi.mock('@/lib/actions/review', () => ({
   addCommentAction: (payload: unknown) => addComment(payload),
@@ -36,12 +39,12 @@ vi.mock('@/lib/actions/review', () => ({
   confirmFindingAction: async () => ({ ok: true }),
   dismissFindingAction: async () => ({ ok: true }),
   shipAction: (payload: unknown) => ship(payload),
-  claimAction: async () => ({ ok: true }),
+  claimAction: (...args: unknown[]) => claim(...args),
   gateAction: async () => ({ ok: true, data: { blocked: false, reasons: [], interstitials: [] } }),
 }));
 
 vi.mock('next/navigation', () => ({
-  useRouter: () => ({ push: vi.fn(), refresh: vi.fn() }),
+  useRouter: () => ({ push: routerPush, refresh: routerRefresh }),
 }));
 
 const CONTENT = 'The first claim is invented.\n\nThe second paragraph is fine.';
@@ -55,10 +58,16 @@ const REQUEST = {
   source: 'Account pass.',
   policyLabel: 'policy v1',
   roundBudget: 3,
-  queueSlug: 'pico-cold-email',
+  queueSlug: 'pico-cro-w2b-cold-email',
   projectSlug: 'pico',
+  environment: 'production' as const,
   budgetExhausted: false,
 };
+
+const QUEUE_HREF =
+  '/queue?project=pico&queue=pico-cro-w2b-cold-email&env=production';
+const NEXT_HREF =
+  '/review/r2?project=pico&queue=pico-cro-w2b-cold-email&env=production';
 
 const CRITERIA: CriterionData[] = [
   { id: 'c1', title: 'Voice', description: null, verdict: 'pass' },
@@ -294,6 +303,62 @@ describe('VOBO-282: human save in edit mode', () => {
     fireEvent.click(screen.getByRole('button', { name: /Save as human version/i }));
     await waitFor(() => expect(screen.getByText(/Score all criteria to proceed — 1 left/)).toBeTruthy());
     expect(screen.getByRole('button', { name: /Save as human version/i })).toBeTruthy();
+  });
+});
+
+describe('VOBO-269: review navigation keeps the working queue', () => {
+  beforeEach(() => {
+    ship.mockClear();
+    claim.mockClear();
+    routerPush.mockClear();
+    claim.mockResolvedValue({ ok: true as const });
+    ship.mockResolvedValue({
+      ok: true as const,
+      data: { nextRequestId: null as string | null, nextLeaseMine: false },
+    });
+  });
+
+  it('Back to queue is the three-param href for this request’s queue', () => {
+    renderWorkspace();
+    expect(screen.getByRole('link', { name: /Back to queue/i }).getAttribute('href')).toBe(
+      QUEUE_HREF
+    );
+  });
+
+  it('last item: a verdict lands on that queue’s list, not bare /queue', async () => {
+    renderWorkspace();
+    fireEvent.click(screen.getByTestId('verdict-button'));
+    await waitFor(() => expect(routerPush).toHaveBeenCalled());
+    expect(routerPush).toHaveBeenCalledWith(QUEUE_HREF);
+    expect(routerPush.mock.calls.flat()).not.toContain('/queue');
+  });
+
+  it('next item: opens that review with the three params', async () => {
+    ship.mockResolvedValueOnce({
+      ok: true as const,
+      data: { nextRequestId: 'r2', nextLeaseMine: true },
+    });
+    renderWorkspace();
+    fireEvent.click(screen.getByTestId('verdict-button'));
+    await waitFor(() => expect(routerPush).toHaveBeenCalled());
+    expect(routerPush).toHaveBeenCalledWith(NEXT_HREF);
+  });
+
+  it('claim race: lands on the same three-param list', async () => {
+    ship.mockResolvedValueOnce({
+      ok: true as const,
+      data: { nextRequestId: 'r2', nextLeaseMine: false },
+    });
+    claim.mockResolvedValueOnce({
+      ok: false as const,
+      error: 'taken',
+      code: 'claim_race',
+    });
+    renderWorkspace();
+    fireEvent.click(screen.getByTestId('verdict-button'));
+    await waitFor(() => expect(routerPush).toHaveBeenCalled());
+    expect(routerPush).toHaveBeenCalledWith(QUEUE_HREF);
+    expect(routerPush.mock.calls.flat()).not.toContain('/queue');
   });
 });
 
