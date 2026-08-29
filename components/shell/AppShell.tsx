@@ -176,7 +176,7 @@ const KEYMAP: Array<[string, string]> = [
   ['A', 'Anchor a correction on the selection'],
   ['C / D', 'Confirm / dismiss (with reason)'],
   ['1–5', 'Score the focused criterion'],
-  ['P / O / X', 'Persists / re-pin / retire (compare rail)'],
+  ['P / O / X', 'Persists / re-pin / retire (workspace rail)'],
   ['⌘Enter', 'Open the pre-submit sheet / ship'],
   ['Esc', 'Close composer or sheet'],
   ['?', 'This sheet'],

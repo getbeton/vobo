@@ -29,7 +29,13 @@ export default async function ReviewPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ project?: string; queue?: string; env?: string }>;
+  searchParams: Promise<{
+    project?: string;
+    queue?: string;
+    env?: string;
+    l?: string;
+    r?: string;
+  }>;
 }) {
   const { id } = await params;
   const sp = await searchParams;

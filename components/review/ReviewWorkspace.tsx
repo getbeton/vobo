@@ -657,7 +657,6 @@ export function ReviewWorkspace({
     });
   };
 
-  const compareAvailable = request.round > 1;
   const budgetReached = request.round >= request.roundBudget;
   const rejectBlocked = request.budgetExhausted;
 
@@ -906,18 +905,6 @@ export function ReviewWorkspace({
           >
             Score all criteria to proceed — {unscored} left
           </span>
-        )}
-        {compareAvailable && (
-          <Link
-            href={reviewHref(request.id, queueRef(request), {
-              compare: true,
-              l: request.round - 1,
-              r: request.round,
-            })}
-            style={{ fontSize: 13, color: 'var(--blue-700)', textDecoration: 'none', fontWeight: 500 }}
-          >
-            Compare v{request.round - 1} ↔ v{request.round}
-          </Link>
         )}
         {splitAvailable && !editMode && (
           splitOpen ? (
