@@ -154,6 +154,7 @@ export async function outgoingCorrections(tx: DbOrTx, requestId: string) {
   const { request, version } = await loadContext(tx, requestId);
   const rows = await annotationStates(tx, requestId, version.id);
   const out = rows.filter((r) => {
+    if (isHumanResolved(r.ann, r.state)) return false;
     if (r.ann.bornRound === request.round && !r.ann.resolvedAt) return true; // new
     if (!r.state) return false;
     if (r.state.state === 'persisting' && r.state.confirmation !== 'res') return true; // re-asserted
