@@ -344,7 +344,12 @@ export function VersionCompare({
   const orphans = prior.filter((f) => f.state === 'orphaned');
 
   const stateChip = (f: FindingData) => {
-    const displayState = f.confirmation === 'res' ? 'resolved' : f.confirmation === 'per' ? 'persisting' : f.state ?? 'new';
+    const displayState =
+      f.confirmation === 'res' || f.resolvedComment
+        ? 'resolved'
+        : f.confirmation === 'per'
+          ? 'persisting'
+          : f.state ?? 'new';
     const c = stateColors[displayState] ?? stateColors.new;
     return (
       <span
@@ -640,6 +645,18 @@ export function VersionCompare({
                       onClick={commitRetire}
                     >
                       Retire
+                    </button>
+                  </div>
+                ) : f.confirmation === 'res' || f.resolvedComment ? (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    <button
+                      type="button"
+                      className="ds-btn ds-btn--ghost ds-btn--sm"
+                      style={{ height: 28, fontSize: 12 }}
+                      onClick={() => openFollowUp('retire', f.id)}
+                      title="Drop from history — not required for Approve"
+                    >
+                      Retire <kbd style={{ fontSize: 10 }}>X</kbd>
                     </button>
                   </div>
                 ) : (
