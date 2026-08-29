@@ -77,6 +77,7 @@ function renderPane(
       ref={refCb}
       onMouseUp={onMouseUp}
       data-side={dataSide}
+      tabIndex={dataSide === 'right' ? 0 : undefined}
       style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '24px 28px 80px' }}
     >
       <div style={{ fontSize: 14.5, lineHeight: 1.8, color: 'var(--slate-800)', whiteSpace: 'pre-wrap', maxWidth: 700 }}>
@@ -141,6 +142,7 @@ export function VersionCompare({
   const [gateInfo, setGateInfo] = useState<{ blocked: boolean; reasons: string[]; interstitials: string[] } | null>(null);
   const leftRef = useRef<HTMLDivElement | null>(null);
   const rightRef = useRef<HTMLDivElement | null>(null);
+  const reasonRef = useRef<HTMLInputElement | null>(null);
   const syncing = useRef(false);
 
   const prior = findings.filter((f) => f.bornRound < request.round);
@@ -215,6 +217,31 @@ export function VersionCompare({
     );
   };
 
+  const commitRetire = () => {
+    if (!retireFor || retireReason.trim().length < 2) return;
+    const reason = retireReason;
+    const annotationId = retireFor;
+    setRetireFor(null);
+    setRetireReason('');
+    act(() => retireAction(request.id, annotationId, reason));
+  };
+
+  const openFollowUp = (kind: 'retire' | 'repin', annotationId: string) => {
+    if (kind === 'retire') {
+      setRepinFor(null);
+      setRetireFor(annotationId);
+    } else {
+      setRetireFor(null);
+      setRetireReason('');
+      setRepinFor(annotationId);
+      rightRef.current?.focus();
+    }
+  };
+
+  useEffect(() => {
+    if (retireFor) reasonRef.current?.focus();
+  }, [retireFor]);
+
   const openShip = () => {
     startTransition(async () => {
       const res = await gateAction(request.id);
@@ -237,9 +264,40 @@ export function VersionCompare({
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement)?.closest('input,textarea')) return;
+      const target = e.target;
+      const inField =
+        target instanceof HTMLElement &&
+        Boolean(target.closest('input,textarea,[contenteditable]'));
+
+      if (e.key === 'Escape') {
+        if (retireFor || repinFor) {
+          e.preventDefault();
+          setRetireFor(null);
+          setRepinFor(null);
+          setRetireReason('');
+          return;
+        }
+        if (inField) return;
+        return;
+      }
+
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        if (retireFor) {
+          commitRetire();
+          return;
+        }
+        if (repinFor) {
+          captureRepin();
+          return;
+        }
+        if (inField) return;
+        openShip();
+        return;
+      }
+
+      if (inField) return;
       const f = ordered.find((x) => x.id === focusId) ?? ordered[0];
-      if (e.key === 'Escape') setRepinFor(null);
       if (!f) return;
       if (e.key === 'j' || e.key === 'J') {
         const i = ordered.findIndex((x) => x.id === (focusId ?? f.id));
@@ -253,14 +311,13 @@ export function VersionCompare({
         act(() => confirmResolutionAction(request.id, f.id, right.id!));
       if (e.key === 'p' || e.key === 'P')
         act(() => markPersistingAction(request.id, f.id, right.id!));
-      if (e.key === 'o' || e.key === 'O') setRepinFor(f.id);
-      if (e.key === 'x' || e.key === 'X') setRetireFor(f.id);
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') openShip();
+      if (e.key === 'o' || e.key === 'O') openFollowUp('repin', f.id);
+      if (e.key === 'x' || e.key === 'X') openFollowUp('retire', f.id);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ordered, focusId]);
+  }, [ordered, focusId, retireFor, repinFor, retireReason]);
 
   const leftMarks = prior.map((f) => ({
     start: f.startPos,
@@ -548,8 +605,24 @@ export function VersionCompare({
                 {retireFor === f.id ? (
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                     <input
+                      ref={reasonRef}
+                      autoFocus
                       value={retireReason}
                       onChange={(e) => setRetireReason(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setRetireFor(null);
+                          setRetireReason('');
+                          return;
+                        }
+                        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          commitRetire();
+                        }
+                      }}
                       placeholder="Retire reason — required"
                       style={{
                         flex: 1,
@@ -564,12 +637,7 @@ export function VersionCompare({
                       type="button"
                       className="ds-btn ds-btn--outline ds-btn--sm"
                       disabled={retireReason.trim().length < 2}
-                      onClick={() => {
-                        const reason = retireReason;
-                        setRetireFor(null);
-                        setRetireReason('');
-                        act(() => retireAction(request.id, f.id, reason));
-                      }}
+                      onClick={commitRetire}
                     >
                       Retire
                     </button>
@@ -596,7 +664,7 @@ export function VersionCompare({
                       type="button"
                       className="ds-btn ds-btn--outline ds-btn--sm"
                       style={{ height: 28, fontSize: 12 }}
-                      onClick={() => setRepinFor(f.id)}
+                      onClick={() => openFollowUp('repin', f.id)}
                     >
                       Re-pin <kbd style={{ fontSize: 10 }}>O</kbd>
                     </button>
@@ -604,7 +672,7 @@ export function VersionCompare({
                       type="button"
                       className="ds-btn ds-btn--ghost ds-btn--sm"
                       style={{ height: 28, fontSize: 12 }}
-                      onClick={() => setRetireFor(f.id)}
+                      onClick={() => openFollowUp('retire', f.id)}
                     >
                       Retire <kbd style={{ fontSize: 10 }}>X</kbd>
                     </button>
