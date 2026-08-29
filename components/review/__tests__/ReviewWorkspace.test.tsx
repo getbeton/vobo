@@ -442,6 +442,11 @@ describe('VOBO-276: round 2+ opens split and accepts a comment on the current pa
     expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
   });
 
+  it('has no Compare link — the split is the station', () => {
+    renderRound2();
+    expect(screen.queryByRole('link', { name: /Compare/i })).toBeNull();
+  });
+
   it('criteria stay on the split and can be scored', async () => {
     render(
       <ReviewWorkspace
