@@ -12,6 +12,8 @@ import {
   retire,
 } from '@/lib/core/verdict';
 import { getVerifiedChain } from '@/lib/core/eventlog';
+import { contentHash } from '@/lib/core/events';
+import { listFailingRequests } from '@/lib/core/failing';
 
 const V1 = `Subject: quick question about your review stack
 
@@ -482,6 +484,202 @@ describe('VOBO-273: resolve/C on prior comments unblocks approve', () => {
 
     const open = await approveGate(db, request.id, fx.userId);
     expect(open.blocked).toBe(false);
+  });
+});
+
+async function round2OrphanUnscored() {
+  const { request } = await baseCreate();
+  const ann = await reviewAndReject(request.id);
+  const v2 = await submitVersion(db, {
+    projectId: fx.projectId,
+    customerRequestId: request.customerRequestId,
+    contentMd: ORPHAN_V2,
+  });
+  expect(v2.classifications).toMatchObject({ orphaned: 1 });
+  await claim(db, request.id, fx.userId);
+  return { request, v2, annotationId: ann.id };
+}
+
+async function versionCount(requestId: string) {
+  const rows = await db.query.artifactVersions.findMany({
+    where: (t, { eq }) => eq(t.requestId, requestId),
+  });
+  return rows.length;
+}
+
+/**
+ * VOBO-282. Human save is the accepted artifact, verbatim. Must fail on
+ * current staging: ship() still runs approveGate for approve_edited.
+ */
+describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', () => {
+  it('overrides orphans and unscored criteria', async () => {
+    const { request } = await round2OrphanUnscored();
+    const body = 'Human rewrite of the whole letter.';
+    const shipped = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'approve_edited',
+      editedContentMd: body,
+    });
+    expect(shipped.status).toBe('accepted');
+    expect(shipped.sealedHash).toBe(contentHash(body));
+
+    const row = await db.query.reviewRequests.findFirst({
+      where: (t, { eq }) => eq(t.id, request.id),
+    });
+    expect(row?.status).toBe('accepted');
+    expect(row?.acceptedHash).toBe(contentHash(body));
+
+    const human = await db.query.artifactVersions.findFirst({
+      where: (t, { eq }) => eq(t.id, row!.acceptedVersionId!),
+    });
+    expect(human?.humanAuthored).toBe(true);
+    expect(human?.authorKind).toBe('human');
+    expect(human?.contentMd).toBe(body);
+  });
+
+  it('overrides persisting with no human confirmation', async () => {
+    const { request } = await baseCreate();
+    await reviewAndReject(request.id);
+    await submitVersion(db, {
+      projectId: fx.projectId,
+      customerRequestId: request.customerRequestId,
+      contentMd: V1 + '\n\nP.S. New unrelated line.',
+    });
+    await claim(db, request.id, fx.userId);
+    const shipped = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'approve_edited',
+      editedContentMd: 'Fixed by a human.',
+    });
+    expect(shipped.status).toBe('accepted');
+  });
+
+  it('seals the submitted markdown including inner whitespace', async () => {
+    const { request } = await round2OrphanUnscored();
+    const body = 'Hello  \n\tworld';
+    const shipped = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'approve_edited',
+      editedContentMd: body,
+    });
+    expect(shipped.sealedHash).toBe(contentHash(body));
+    const row = await db.query.reviewRequests.findFirst({
+      where: (t, { eq }) => eq(t.id, request.id),
+    });
+    const human = await db.query.artifactVersions.findFirst({
+      where: (t, { eq }) => eq(t.id, row!.acceptedVersionId!),
+    });
+    expect(human?.contentMd).toBe(body);
+  });
+
+  it('refuses empty or whitespace-only body; status stays open', async () => {
+    const { request } = await round2OrphanUnscored();
+    await expect(
+      ship(db, {
+        requestId: request.id,
+        userId: fx.userId,
+        kind: 'approve_edited',
+        editedContentMd: '   \n',
+      })
+    ).rejects.toMatchObject({ status: 422, code: 'edited_content_required' });
+    const row = await db.query.reviewRequests.findFirst({
+      where: (t, { eq }) => eq(t.id, request.id),
+    });
+    expect(row?.status).toBe('claimed');
+  });
+
+  it('second approve_edited is 409 and does not add a version', async () => {
+    const { request } = await round2OrphanUnscored();
+    await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'approve_edited',
+      editedContentMd: 'First human take.',
+    });
+    const n = await versionCount(request.id);
+    await expect(
+      ship(db, {
+        requestId: request.id,
+        userId: fx.userId,
+        kind: 'approve_edited',
+        editedContentMd: 'Second take.',
+      })
+    ).rejects.toMatchObject({ status: 409, code: 'terminal_status' });
+    expect(await versionCount(request.id)).toBe(n);
+  });
+
+  it('accepts on the last policy round', async () => {
+    const { request } = await round2OrphanUnscored();
+    await addComment(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      body: 'still weak',
+      startPos: 0,
+      endPos: 8,
+    });
+    await scoreAllPass(request.id);
+    await ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_corrections' });
+    const v3 = await submitVersion(db, {
+      projectId: fx.projectId,
+      customerRequestId: request.customerRequestId,
+      contentMd: ORPHAN_V2 + '\n\nAnother pass.',
+    });
+    expect(v3.request.round).toBe(3);
+    await claim(db, request.id, fx.userId);
+    const shipped = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'approve_edited',
+      editedContentMd: 'Human close on round 3.',
+    });
+    expect(shipped.status).toBe('accepted');
+  });
+
+  it('accepts after budgetExhaustedAt and drops off the failing list; reject stays 422', async () => {
+    const { request } = await round2OrphanUnscored();
+    await addComment(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      body: 'still weak',
+      startPos: 0,
+      endPos: 8,
+    });
+    await scoreAllPass(request.id);
+    await ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_corrections' });
+    await submitVersion(db, {
+      projectId: fx.projectId,
+      customerRequestId: request.customerRequestId,
+      contentMd: ORPHAN_V2 + '\n\nAnother pass.',
+    });
+    await claim(db, request.id, fx.userId);
+    await scoreAllPass(request.id);
+    await ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_rerun' });
+    const flagged = await db.query.reviewRequests.findFirst({
+      where: (t, { eq }) => eq(t.id, request.id),
+    });
+    expect(flagged?.budgetExhaustedAt).toBeInstanceOf(Date);
+
+    await expect(
+      ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_rerun' })
+    ).rejects.toMatchObject({ code: 'round_budget_exceeded' });
+
+    const shipped = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'approve_edited',
+      editedContentMd: 'Human close after the wall.',
+    });
+    expect(shipped.status).toBe('accepted');
+
+    const listed = await listFailingRequests(db, { queueId: fx.queueId });
+    expect(listed.map((r) => r.id)).not.toContain(request.id);
+
+    await expect(
+      ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_rerun' })
+    ).rejects.toMatchObject({ code: 'terminal_status' });
   });
 });
 
