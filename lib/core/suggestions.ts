@@ -73,8 +73,6 @@ export async function createSuggestion(
     )
       throw new ApiProblem(422, 'invalid_range', 'Selection range is outside the artifact');
     const replacement = input.replacement;
-    if (!replacement.trim())
-      throw new ApiProblem(422, 'empty_replacement', 'Suggestion replacement is empty');
     const originalQuote = working.slice(input.startPos, input.endPos);
     const [row] = await tx
       .insert(manualEdits)

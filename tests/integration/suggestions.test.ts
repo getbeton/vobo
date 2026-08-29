@@ -37,6 +37,38 @@ async function scoreAll(requestId: string, verdict: 'pass' | 'fail') {
 }
 
 describe('VOBO-291: suggestions and Save manual edits', () => {
+  it('empty replacement is a delete suggestion; Accept folds it out', async () => {
+    const { request } = await createReview(db, {
+      projectId: fx.projectId,
+      queueSlug: 'q',
+      customerRequestId: 'sug/del',
+      title: 'Dana',
+      contentMd: BODY,
+    });
+    await claim(db, request.id, fx.userId);
+    const start = BODY.indexOf('first claim');
+    const sug = await createSuggestion(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      startPos: start,
+      endPos: start + 'first claim'.length,
+      replacement: '',
+    });
+    expect(sug.replacement).toBe('');
+    await acceptSuggestion(db, {
+      requestId: request.id,
+      suggestionId: sug.id,
+      userId: fx.userId,
+    });
+    const saved = await saveManualEdits(db, { requestId: request.id, userId: fx.userId });
+    const latest = await db
+      .select()
+      .from(artifactVersions)
+      .where(eq(artifactVersions.requestId, request.id));
+    const human = latest.find((v) => v.versionNumber === saved.round);
+    expect(human?.contentMd).toBe(BODY.replace('first claim', ''));
+  });
+
   it('Accept on a suggestion does not insert a version; Save writes one human version and stays', async () => {
     const { request } = await createReview(db, {
       projectId: fx.projectId,

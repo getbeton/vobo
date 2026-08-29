@@ -47,6 +47,15 @@ describe('VOBO-291: applyManualEdits', () => {
     expect(orphaned).toEqual([comment]);
   });
 
+  it('empty replacement deletes the span', () => {
+    const rows: ManualEditOp[] = [
+      { startPos: 4, endPos: 16, replacement: '', status: 'applied' },
+    ];
+    expect(applyManualEdits(BASE, rows)).toBe(
+      'The is invented. The second paragraph is fine.'
+    );
+  });
+
   it('does not shift a mark wholly before the replacement', () => {
     const comment = { startPos: 0, endPos: 3 };
     const { kept, orphaned } = shiftMarks([comment], {
