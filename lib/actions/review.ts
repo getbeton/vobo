@@ -192,6 +192,7 @@ export const shipAction = wrap(
     acknowledgeInterstitials?: boolean;
     editedContentMd?: string;
     overrideUntriagedFindings?: boolean;
+    acceptedVersionId?: string;
   }) => {
     const user = await guardReviewer(input.requestId);
     const res = await ship(db, { ...input, userId: user.id });

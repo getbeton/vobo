@@ -70,14 +70,14 @@ export default async function ReviewPage({
   });
   if (!version) notFound();
 
+  const allVersions = await db
+    .select()
+    .from(artifactVersions)
+    .where(eq(artifactVersions.requestId, request.id))
+    .orderBy(asc(artifactVersions.versionNumber));
   const previous =
     request.round >= 2
-      ? await db.query.artifactVersions.findFirst({
-          where: and(
-            eq(artifactVersions.requestId, request.id),
-            eq(artifactVersions.versionNumber, request.round - 1)
-          ),
-        })
+      ? allVersions.find((v) => v.versionNumber === request.round - 1) ?? null
       : null;
 
   const anns = await db
@@ -150,6 +150,12 @@ export default async function ReviewPage({
       contentMd={version.contentMd}
       previousContentMd={previous?.contentMd ?? null}
       versionId={version.id}
+      versions={allVersions.map((v) => ({
+        id: v.id,
+        number: v.versionNumber,
+        author: v.authorLabel ?? (v.humanAuthored ? 'human' : 'model'),
+        hash: v.contentHash.slice(0, 8),
+      }))}
       annotations={anns.map(({ ann, state }) => ({
         id: ann.id,
         body: ann.body,
