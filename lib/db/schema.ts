@@ -362,9 +362,9 @@ export const reviewRequests = pgTable(
     // pull. Nothing is ever hard-deleted — versions and events reference it.
     archivedAt: timestamp('archived_at'),
     archivedBy: text('archived_by').references(() => user.id),
-    // Set when a reject ships at round >= policy.roundBudget. The reject still
-    // happened (status is rejected); this flag is the extra signal for the
-    // operator failing-requests page. Not a status value — same reason as archive.
+    // Set when the Nth reject (policy.roundBudget) ships. Status becomes
+    // escalated so the pipeline does not regenerate. Approve still closes it.
+    // The flag feeds the operator failing-requests page.
     budgetExhaustedAt: timestamp('budget_exhausted_at'),
     budgetExhaustedBy: text('budget_exhausted_by').references(() => user.id),
     // Routing-confidence signal from the latest completed judge run. Never a

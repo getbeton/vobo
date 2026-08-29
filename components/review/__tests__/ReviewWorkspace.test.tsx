@@ -81,6 +81,7 @@ const REQUEST = {
   projectSlug: 'pico',
   environment: 'production' as const,
   budgetExhausted: false,
+  rejectCount: 0,
 };
 
 const QUEUE_HREF =
@@ -925,6 +926,32 @@ describe('ReviewWorkspace — the single verdict button', () => {
     const card = screen.getByTestId('criterion-c1');
     await waitFor(() => expect(document.activeElement).toBe(card));
     fireEvent.keyDown(card, { key: 'Enter', metaKey: true });
+    await waitFor(() => expect(ship).toHaveBeenCalledTimes(1));
+    expect(ship.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ requestId: 'r1', kind: 'reject_rerun' })
+    );
+  });
+});
+
+describe('last-round reject', () => {
+  beforeEach(() => ship.mockClear());
+
+  it('Reject is enabled without scored criteria and ships reject_rerun', async () => {
+    render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, round: 3, roundBudget: 3, rejectCount: 2 }}
+        contentMd={CONTENT}
+        versionId="v3"
+        annotations={[]}
+        criteria={[{ id: 'c1', title: 'Voice', description: null, verdict: null }]}
+        files={[]}
+      />
+    );
+    const btn = screen.getByTestId('verdict-button') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    expect(btn.textContent).toMatch(/Reject/);
+    expect(screen.getByText(/Last round/)).toBeTruthy();
+    fireEvent.click(btn);
     await waitFor(() => expect(ship).toHaveBeenCalledTimes(1));
     expect(ship.mock.calls[0][0]).toEqual(
       expect.objectContaining({ requestId: 'r1', kind: 'reject_rerun' })

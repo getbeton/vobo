@@ -169,6 +169,24 @@ export default async function WorkspacePage() {
           }}
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+            {isOperator && (
+              <Link
+                href="/admin/escalations"
+                style={{
+                  ...card,
+                  textDecoration: 'none',
+                  color: 'inherit',
+                  borderColor: 'var(--amber-500)',
+                  background: 'var(--amber-50)',
+                }}
+              >
+                <span style={{ fontWeight: 600, fontSize: 14 }}>Escalations</span>
+                <span style={{ fontSize: 13, color: 'var(--slate-600)' }}>
+                  Last-round Reject flags a request and the reviewer moves on.
+                  The operator inbox is not built yet (VOBO-300).
+                </span>
+              </Link>
+            )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <span
                 style={{

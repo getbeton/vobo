@@ -15,7 +15,7 @@ import { appendEvent, Db, DbOrTx } from './eventlog';
 import { ApiProblem, getPolicyForRequest } from './requests';
 import { contentHash } from './events';
 import { untriagedFindings } from '@/lib/findings/read';
-import { listEdits, rejectDecisionCount, workingContentMd } from './suggestions';
+import { listEdits, workingContentMd, rejectDecisionCount } from './suggestions';
 
 /**
  * Verdict state machine. Semantics are NORMATIVE from the design prototype's
@@ -199,7 +199,12 @@ export async function ship(db: Db, input: ShipInput) {
       .for('update');
     if (!locked) throw new ApiProblem(404, 'request_not_found', 'Request not found');
     if (locked.archivedAt) throw new ApiProblem(409, 'archived', 'Request is archived');
-    if (['accepted', 'escalated'].includes(locked.status))
+    if (locked.status === 'accepted')
+      throw new ApiProblem(409, 'terminal_status', `Request is ${locked.status}`);
+    const closingEscalated =
+      locked.status === 'escalated' &&
+      (input.kind === 'approve' || input.kind === 'approve_edited');
+    if (locked.status === 'escalated' && !closingEscalated)
       throw new ApiProblem(409, 'terminal_status', `Request is ${locked.status}`);
 
     const { request, version } = await loadContext(tx, input.requestId);
@@ -236,13 +241,23 @@ export async function ship(db: Db, input: ShipInput) {
         throw new ApiProblem(422, 'edited_content_required', 'approve_edited requires the edited content');
     }
 
+    const priorRejects = await rejectDecisionCount(tx, request.id);
+    const thisRejectIsNth =
+      input.kind === 'reject_corrections' || input.kind === 'reject_rerun'
+        ? priorRejects + 1
+        : 0;
+    const atWall = thisRejectIsNth >= policy.roundBudget;
+    let criteriaSkipped = false;
+
     if (input.kind === 'escalate') {
       if (!input.reason || input.reason.trim().length < 4)
         throw new ApiProblem(422, 'escalation_reason_required', 'Escalation reason is required');
     } else {
       const gate = await approveGate(tx, input.requestId, input.userId);
       const criteriaBlock = gate.reasons.find((r) => r.startsWith('Score all criteria'));
-      if (criteriaBlock) throw new ApiProblem(422, 'criteria_unscored', criteriaBlock);
+      if (criteriaBlock && !atWall)
+        throw new ApiProblem(422, 'criteria_unscored', criteriaBlock);
+      if (criteriaBlock && atWall) criteriaSkipped = true;
 
       if (input.kind === 'approve') {
         if (gate.blocked)
@@ -252,17 +267,17 @@ export async function ship(db: Db, input: ShipInput) {
       }
 
       if (input.kind === 'reject_corrections' || input.kind === 'reject_rerun') {
-        // The Xth reject at the wall ships and flags. A further reject after
-        // that is refused: the loop is over. Do not drop the flag.
-        if (locked.budgetExhaustedAt)
+        if (locked.budgetExhaustedAt && locked.status !== 'escalated')
           throw new ApiProblem(
             422,
             'round_budget_exceeded',
             `This request already used the last policy round (${locked.round}/${policy.roundBudget})`
           );
-        const out = await outgoingCorrections(tx, input.requestId);
-        if (input.kind === 'reject_corrections' && out.length === 0)
-          throw new ApiProblem(422, 'no_corrections', 'No corrections to send — use reject-rerun');
+        if (!atWall) {
+          const out = await outgoingCorrections(tx, input.requestId);
+          if (input.kind === 'reject_corrections' && out.length === 0)
+            throw new ApiProblem(422, 'no_corrections', 'No corrections to send — use reject-rerun');
+        }
       }
     }
 
@@ -373,35 +388,51 @@ export async function ship(db: Db, input: ShipInput) {
         round_budget: policy.roundBudget,
       });
     } else {
-      newStatus = 'rejected';
       const at = new Date();
-      const rejectCount = await rejectDecisionCount(tx, request.id);
-      const exhaustBudget =
-        (input.kind === 'reject_corrections' || input.kind === 'reject_rerun') &&
-        rejectCount >= policy.roundBudget &&
-        !locked.budgetExhaustedAt;
-      await tx
-        .update(reviewRequests)
-        .set({
-          status: 'rejected',
-          stickyReviewerId: policy.stickyRegenerations ? input.userId : null,
-          updatedAt: at,
-          ...(exhaustBudget
-            ? { budgetExhaustedAt: at, budgetExhaustedBy: input.userId }
-            : {}),
-        })
-        .where(eq(reviewRequests.id, request.id));
-      await appendEvent(tx, request.id, 'decision.rejected', {
-        ...basePayload,
-        kind: input.kind,
-        corrections: outgoing,
-      });
-      if (exhaustBudget) {
-        await appendEvent(tx, request.id, 'request.budget_exhausted', {
-          by: input.userId,
-          round: request.round,
-          round_budget: policy.roundBudget,
+      if (atWall) {
+        // Nth reject: end of the rewrite loop. Status is escalated so the
+        // model does not send another version. Approve still closes it.
+        newStatus = 'escalated';
+        await tx
+          .update(reviewRequests)
+          .set({
+            status: 'escalated',
+            budgetExhaustedAt: locked.budgetExhaustedAt ?? at,
+            budgetExhaustedBy: locked.budgetExhaustedBy ?? input.userId,
+            updatedAt: at,
+          })
+          .where(eq(reviewRequests.id, request.id));
+        await appendEvent(tx, request.id, 'decision.escalated', {
+          ...basePayload,
+          via: 'last_round_reject',
           kind: input.kind,
+          reason: 'round_budget_exhausted',
+          criteria_skipped: criteriaSkipped,
+          corrections: outgoing,
+          round_budget: policy.roundBudget,
+        });
+        if (!locked.budgetExhaustedAt) {
+          await appendEvent(tx, request.id, 'request.budget_exhausted', {
+            by: input.userId,
+            round: request.round,
+            round_budget: policy.roundBudget,
+            kind: input.kind,
+          });
+        }
+      } else {
+        newStatus = 'rejected';
+        await tx
+          .update(reviewRequests)
+          .set({
+            status: 'rejected',
+            stickyReviewerId: policy.stickyRegenerations ? input.userId : null,
+            updatedAt: at,
+          })
+          .where(eq(reviewRequests.id, request.id));
+        await appendEvent(tx, request.id, 'decision.rejected', {
+          ...basePayload,
+          kind: input.kind,
+          corrections: outgoing,
         });
       }
       // Re-asserted persisting anchors are recorded as such.
