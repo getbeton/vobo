@@ -14,6 +14,7 @@ import {
   queues,
   projects,
   judgeRecords,
+  manualEdits,
 } from '@/lib/db/schema';
 import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
 import { NoAccess } from '@/components/shell/NoAccess';
@@ -213,6 +214,19 @@ export default async function ReviewPage({
         };
       })}
       files={files.map((f) => ({ name: f.name, kind: f.contentType ?? 'file' }))}
+      suggestions={(
+        await db
+          .select()
+          .from(manualEdits)
+          .where(eq(manualEdits.baseVersionId, version.id))
+      ).map((s) => ({
+        id: s.id,
+        startPos: s.startPos,
+        endPos: s.endPos,
+        originalQuote: s.originalQuote,
+        replacement: s.replacement,
+        status: s.status,
+      }))}
       machineReview={{
         withheld: machine.withheld,
         pending: machine.run?.state === 'pending' || machine.run?.state === 'running',

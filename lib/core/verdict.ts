@@ -15,6 +15,7 @@ import { appendEvent, Db, DbOrTx } from './eventlog';
 import { ApiProblem, getPolicyForRequest } from './requests';
 import { contentHash } from './events';
 import { untriagedFindings } from '@/lib/findings/read';
+import { rejectDecisionCount } from './suggestions';
 
 /**
  * Verdict state machine. Semantics are NORMATIVE from the design prototype's
@@ -358,9 +359,10 @@ export async function ship(db: Db, input: ShipInput) {
     } else {
       newStatus = 'rejected';
       const at = new Date();
+      const rejectCount = await rejectDecisionCount(tx, request.id);
       const exhaustBudget =
         (input.kind === 'reject_corrections' || input.kind === 'reject_rerun') &&
-        request.round >= policy.roundBudget &&
+        rejectCount >= policy.roundBudget &&
         !locked.budgetExhaustedAt;
       await tx
         .update(reviewRequests)
