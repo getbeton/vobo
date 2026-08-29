@@ -10,6 +10,7 @@ import {
   confirmResolution,
   markPersisting,
   retire,
+  repin,
 } from '@/lib/core/verdict';
 import { getVerifiedChain } from '@/lib/core/eventlog';
 import { contentHash } from '@/lib/core/events';
@@ -680,6 +681,75 @@ describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', (
     await expect(
       ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_rerun' })
     ).rejects.toMatchObject({ code: 'terminal_status' });
+  });
+});
+
+/**
+ * VOBO-284. Resolve is a terminal state for the correction object.
+ * Outgoing payload must not re-ship a row the reviewer marked done.
+ */
+describe('VOBO-284: Resolve is terminal for comments and versioned corrections', () => {
+  it('comment Resolve unblocks approve and drops the id from outgoing', async () => {
+    const { request, annotationId } = await round2Orphan();
+    await resolveComment(db, request.id, annotationId, fx.userId);
+
+    const gate = await approveGate(db, request.id, fx.userId);
+    expect(gate.blocked).toBe(false);
+    const out = await outgoingCorrections(db, request.id);
+    expect(out.map((r) => r.annotation_id)).not.toContain(annotationId);
+  });
+
+  it('compare C sets resolved_at and drops the id from outgoing', async () => {
+    const { request, v2, annotationId } = await round2Orphan();
+    await confirmResolution(db, request.id, annotationId, v2.version.id);
+    await expectResolvedOneTruth(annotationId, v2.version.id);
+
+    const gate = await approveGate(db, request.id, fx.userId);
+    expect(gate.blocked).toBe(false);
+    const out = await outgoingCorrections(db, request.id);
+    expect(out.map((r) => r.annotation_id)).not.toContain(annotationId);
+  });
+
+  it('no human end state still blocks; reason names Resolve/C', async () => {
+    const { request } = await round2Orphan();
+    const gate = await approveGate(db, request.id, fx.userId);
+    expect(gate.blocked).toBe(true);
+    expect(gate.reasons.join(' ')).toMatch(/resolve|\bC\b/i);
+  });
+
+  it('a resolved re-pin is not in the outgoing payload', async () => {
+    const { request, v2, annotationId } = await round2Orphan();
+    await repin(db, {
+      requestId: request.id,
+      annotationId,
+      versionId: v2.version.id,
+      userId: fx.userId,
+      newQuote: ORPHAN_V2.slice(0, 8),
+      newStartPos: 0,
+      newEndPos: 8,
+    });
+    await confirmResolution(db, request.id, annotationId, v2.version.id);
+
+    const out = await outgoingCorrections(db, request.id);
+    expect(out.map((r) => r.annotation_id)).not.toContain(annotationId);
+  });
+
+  it('Retire still succeeds after Resolve; Approve already worked', async () => {
+    const { request, annotationId } = await round2Orphan();
+    await resolveComment(db, request.id, annotationId, fx.userId);
+    const shipped = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'approve',
+      acknowledgeInterstitials: true,
+    });
+    expect(shipped.status).toBe('accepted');
+    await retire(db, {
+      requestId: request.id,
+      annotationId,
+      userId: fx.userId,
+      reason: 'drop from history',
+    });
   });
 });
 
