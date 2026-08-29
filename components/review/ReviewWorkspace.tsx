@@ -17,23 +17,37 @@ import {
   setCriterionAction,
   shipAction,
   gateAction,
+  createSuggestionAction,
+  acceptSuggestionAction,
+  rejectSuggestionAction,
+  saveManualEditsAction,
+  rerunJudgeAction,
 } from '@/lib/actions/review';
+import { applyManualEdits } from '@/lib/core/manual-edits';
+import type { RemainingWork } from '@/lib/core/metrics';
+import { RemainingWorkChip } from '@/components/queue/RemainingWorkChip';
+import { SuggestionList, type SuggestionData } from './SuggestionLayer';
+
+export type { SuggestionData };
 import { ArtifactPane, MarkedText, useSyncScroll } from './ArtifactPane';
 import { FindingData, PriorFindingsList } from './PriorFindingsRail';
 
 /**
- * Review Workspace — top action bar (Back · unresolved chip · one verdict ⌘↵ ·
- * Correct manually), left Task rail, center markdown with anchored highlights
- * and selection→composer, right rail (Criteria · Comments).
+ * Review Workspace — top action bar (Back · unresolved chip · one verdict ⌘↵),
+ * left Task rail, center markdown with anchored highlights. Select a span,
+ * then type to suggest a replacement, Backspace to suggest a delete, or ⌘⇧M
+ * to comment in the right rail.
  *
  * A judge run folds into the criterion cards: collapsed they show unwrap +
  * name + 0–1 confidence. Unwrap reveals Pass / Fail / N/A so a human can
  * override. Hover or focus on a card highlights the span the judge used.
  *
- * Keyboard: Enter = pass and next criterion, Backspace = fail and next.
- * ⌘↵ ships the single verdict — Reject if any comment is open or any
- * criterion is not pass, otherwise Accept — then opens the next queue item.
+ * Keyboard: Enter = pass and next criterion, Backspace = fail and next
+ * (when no span is selected). ⌘⇧M comments on the selection. ⌘↵ ships
+ * the single verdict, then opens the next queue item.
  */
+
+type SpanPick = { start: number; end: number; phrase: string };
 
 export interface AnnotationData {
   id: string;
@@ -74,6 +88,8 @@ export interface MachineReviewData {
   pending: boolean;
   failed: boolean;
   overallScore: number | null;
+  runState?: 'pending' | 'running' | 'completed' | 'failed' | 'not_sampled' | null;
+  judgeEnabled?: boolean;
 }
 
 interface RequestData {
@@ -120,6 +136,11 @@ const pendingStyle: React.CSSProperties = {
   borderBottom: '2px dashed var(--amber-500)',
 };
 
+const suggestionStyle: React.CSSProperties = {
+  background: 'var(--amber-50)',
+  borderBottom: '2px dashed var(--amber-600)',
+};
+
 const judgePassStyle: React.CSSProperties = {
   background: 'var(--green-100)',
   borderBottom: '2px solid var(--green-500)',
@@ -148,6 +169,7 @@ type OverlayMark = {
   endPos: number;
   ann: AnnotationData | null;
   pending: boolean;
+  suggestion: boolean;
   judge: 'pass' | 'fail' | null;
 };
 
@@ -161,6 +183,8 @@ export function ReviewWorkspace({
   criteria,
   files,
   machineReview = null,
+  suggestions = [],
+  remainingWork = null,
 }: {
   request: RequestData;
   contentMd: string;
@@ -171,6 +195,8 @@ export function ReviewWorkspace({
   criteria: CriterionData[];
   files: Array<{ name: string; kind: string }>;
   machineReview?: MachineReviewData | null;
+  suggestions?: SuggestionData[];
+  remainingWork?: RemainingWork | null;
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
@@ -184,7 +210,9 @@ export function ReviewWorkspace({
   // The comment being edited, and its working body.
   const [editing, setEditing] = useState<string | null>(null);
   const [editText, setEditText] = useState('');
-  const [editMode, setEditMode] = useState(false);
+  const [liveSel, setLiveSel] = useState<SpanPick | null>(null);
+  const [suggest, setSuggest] = useState<SpanPick | null>(null);
+  const [suggestText, setSuggestText] = useState('');
   const [gateInfo, setGateInfo] = useState<{ blocked: boolean; reasons: string[]; interstitials: string[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [shipping, setShipping] = useState(false);
@@ -197,10 +225,12 @@ export function ReviewWorkspace({
     endPos: number;
     passed: boolean;
   } | null>(null);
-  const editRef = useRef<HTMLDivElement>(null);
+  const [confirmRerun, setConfirmRerun] = useState(false);
   const artifactRef = useRef<HTMLDivElement>(null);
   const leftRef = useRef<HTMLDivElement>(null);
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const suggestInputRef = useRef<HTMLTextAreaElement>(null);
+  const liveSelRef = useRef<SpanPick | null>(null);
   const reasonRef = useRef<HTMLInputElement>(null);
   const [currentOnly, setCurrentOnly] = useState(false);
   const [repinFor, setRepinFor] = useState<string | null>(null);
@@ -216,6 +246,10 @@ export function ReviewWorkspace({
   // The key handler is bound once; the main verdict changes with the state.
   const mainVerdictRef = useRef<(() => void) | null>(null);
   const saveCommentRef = useRef<() => void>(() => {});
+  const openCommentOnRef = useRef<(range: SpanPick) => void>(() => {});
+  const startSuggestDraftRef = useRef<(range: SpanPick, firstChar: string) => void>(() => {});
+  const persistSuggestionRef = useRef<(range: SpanPick, replacement: string) => void>(() => {});
+  const readSelectionRef = useRef<() => SpanPick | null>(() => null);
   const railRef = useRef<HTMLDivElement>(null);
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({});
   // Set in the same tick so a held ⌘↵ cannot fire save twice before React commits.
@@ -229,6 +263,7 @@ export function ReviewWorkspace({
   const focusFindingIdRef = useRef<string | null>(null);
   const priorItemsRef = useRef<FindingData[]>([]);
   composerOpenRef.current = Boolean(composer);
+  liveSelRef.current = liveSel;
   coTextRef.current = coText;
   repinForRef.current = repinFor;
   retireForRef.current = retireFor;
@@ -243,6 +278,12 @@ export function ReviewWorkspace({
   const unscored = scoredCriteria.filter((c) => !c.verdict).length;
   const criteriaNotMet = scoredCriteria.some((c) => c.verdict !== 'pass');
   const shouldReject = unresolved.length > 0 || criteriaNotMet;
+  const appliedSuggestions = suggestions.filter((s) => s.status === 'applied');
+  const pendingSuggestions = suggestions.filter((s) => s.status === 'pending');
+  const displayMd = useMemo(
+    () => applyManualEdits(contentMd, appliedSuggestions),
+    [contentMd, appliedSuggestions]
+  );
 
   // Paragraph + segment model (prototype segs()): split content, overlay
   // annotation ranges, tag every segment with its absolute offset.
@@ -251,20 +292,20 @@ export function ReviewWorkspace({
     const re = /\n\s*\n/g;
     let last = 0;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(contentMd)) !== null) {
-      if (contentMd.slice(last, m.index).trim())
-        paras.push({ start: last, end: m.index, text: contentMd.slice(last, m.index) });
+    while ((m = re.exec(displayMd)) !== null) {
+      if (displayMd.slice(last, m.index).trim())
+        paras.push({ start: last, end: m.index, text: displayMd.slice(last, m.index) });
       last = re.lastIndex;
     }
-    if (contentMd.slice(last).trim())
-      paras.push({ start: last, end: contentMd.length, text: contentMd.slice(last) });
+    if (displayMd.slice(last).trim())
+      paras.push({ start: last, end: displayMd.length, text: displayMd.slice(last) });
     return paras.map((p) => {
-      // The open composer's range is overlaid like an annotation, so the
-      // reviewer keeps seeing what they picked. The browser selection is gone
-      // the moment they click into the composer.
+      // Live selection, comment composer, or suggestion draft — same amber
+      // mark. The browser selection is gone the moment they type or comment.
+      const pick = composer ?? suggest ?? liveSel;
       const pending =
-        composer && composer.start >= p.start && composer.start < p.end
-          ? { startPos: composer.start, endPos: composer.end }
+        pick && pick.start >= p.start && pick.start < p.end
+          ? { startPos: pick.start, endPos: pick.end }
           : null;
       const highlight =
         hoverRange && hoverRange.startPos < p.end && hoverRange.endPos > p.start
@@ -277,17 +318,38 @@ export function ReviewWorkspace({
       const marks = annotations
         .filter((a) => a.startPos >= p.start && a.startPos < p.end)
         .sort((a, b) => a.startPos - b.startPos);
+      const suggestionMarks = pendingSuggestions.filter(
+        (s) => s.startPos >= p.start && s.startPos < p.end
+      );
       const overlay: OverlayMark[] = [
         ...marks.map((a) => ({
           startPos: a.startPos,
           endPos: a.endPos,
           ann: a,
           pending: false,
+          suggestion: false,
           judge: null,
         })),
         ...(pending
-          ? [{ startPos: pending.startPos, endPos: pending.endPos, ann: null, pending: true, judge: null }]
+          ? [
+              {
+                startPos: pending.startPos,
+                endPos: pending.endPos,
+                ann: null,
+                pending: true,
+                suggestion: false,
+                judge: null,
+              },
+            ]
           : []),
+        ...suggestionMarks.map((s) => ({
+          startPos: s.startPos,
+          endPos: s.endPos,
+          ann: null,
+          pending: false,
+          suggestion: true,
+          judge: null,
+        })),
         ...(highlight
           ? [
               {
@@ -295,13 +357,14 @@ export function ReviewWorkspace({
                 endPos: highlight.endPos,
                 ann: null,
                 pending: false,
+                suggestion: false,
                 judge: (highlight.passed ? 'pass' : 'fail') as 'pass' | 'fail',
               },
             ]
           : []),
       ].sort((a, b) => {
         if (a.startPos !== b.startPos) return a.startPos - b.startPos;
-        const rank = (m: OverlayMark) => (m.ann ? 0 : m.pending ? 1 : 2);
+        const rank = (m: OverlayMark) => (m.ann ? 0 : m.pending ? 1 : m.suggestion ? 2 : 3);
         return rank(a) - rank(b);
       });
 
@@ -310,6 +373,7 @@ export function ReviewWorkspace({
         start: number;
         ann: AnnotationData | null;
         pending: boolean;
+        suggestion: boolean;
         judge: 'pass' | 'fail' | null;
       }> = [];
       let pos = p.start;
@@ -317,41 +381,53 @@ export function ReviewWorkspace({
         if (mark.startPos < pos) continue; // overlap: skip
         if (mark.startPos > pos)
           segs.push({
-            text: contentMd.slice(pos, mark.startPos),
+            text: displayMd.slice(pos, mark.startPos),
             start: pos,
             ann: null,
             pending: false,
+            suggestion: false,
             judge: null,
           });
         const end = Math.min(mark.endPos, p.end);
         segs.push({
-          text: contentMd.slice(mark.startPos, end),
+          text: displayMd.slice(mark.startPos, end),
           start: mark.startPos,
           ann: mark.ann,
           pending: mark.pending,
+          suggestion: mark.suggestion,
           judge: mark.judge,
         });
         pos = end;
       }
       if (pos < p.end)
         segs.push({
-          text: contentMd.slice(pos, p.end),
+          text: displayMd.slice(pos, p.end),
           start: pos,
           ann: null,
           pending: false,
+          suggestion: false,
           judge: null,
         });
       return {
         ...p,
         segs: segs.length
           ? segs
-          : [{ text: p.text, start: p.start, ann: null, pending: false, judge: null }],
+          : [
+              {
+                text: p.text,
+                start: p.start,
+                ann: null,
+                pending: false,
+                suggestion: false,
+                judge: null,
+              },
+            ],
       };
     });
-  }, [contentMd, annotations, composer, hoverRange]);
+  }, [displayMd, annotations, composer, suggest, liveSel, hoverRange, pendingSuggestions]);
 
   const splitAvailable = request.round >= 2 && Boolean(previousContentMd);
-  const splitOpen = splitAvailable && !currentOnly && !editMode;
+  const splitOpen = splitAvailable && !currentOnly;
   useSyncScroll(leftRef, artifactRef, splitOpen);
 
   const priorItems: FindingData[] = useMemo(() => {
@@ -386,20 +462,73 @@ export function ReviewWorkspace({
     return Number(el.dataset.segStart) + offset;
   };
 
-  const captureSelection = () => {
-    if (repinForRef.current) return;
+  const readSelection = (): SpanPick | null => {
     const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || !artifactRef.current) return;
+    if (!sel || sel.isCollapsed || !artifactRef.current) return null;
     const pane = artifactRef.current;
     const a = findAbsInPane(pane, sel.anchorNode!, sel.anchorOffset);
     const b = findAbsInPane(pane, sel.focusNode!, sel.focusOffset);
-    if (a === null || b === null) return;
+    if (a === null || b === null) return null;
     const start = Math.min(a, b);
     const end = Math.max(a, b);
-    if (end <= start) return;
-    setComposer({ start, end, phrase: contentMd.slice(start, end).slice(0, 60) });
+    if (end <= start) return null;
+    return { start, end, phrase: displayMd.slice(start, end).slice(0, 60) };
+  };
+
+  const captureSelection = () => {
+    if (repinForRef.current) return;
+    const range = readSelection();
+    if (!range) return;
+    setLiveSel(range);
+    setComposer(null);
     setCoText('');
     setEditing(null);
+    setSuggest(null);
+    setSuggestText('');
+    artifactRef.current?.focus();
+  };
+
+  const openCommentOn = (range: SpanPick) => {
+    setComposer(range);
+    setCoText('');
+    setEditing(null);
+    setSuggest(null);
+    setSuggestText('');
+    setLiveSel(null);
+    setRightOpen(true);
+  };
+
+  const startSuggestDraft = (range: SpanPick, firstChar: string) => {
+    setSuggest(range);
+    setSuggestText(firstChar);
+    setComposer(null);
+    setLiveSel(null);
+    setRightOpen(true);
+  };
+
+  const persistSuggestion = (range: SpanPick, replacement: string) => {
+    if (commentBusyRef.current) return;
+    commentBusyRef.current = true;
+    setLiveSel(null);
+    setSuggest(null);
+    setSuggestText('');
+    startTransition(async () => {
+      try {
+        const res = await createSuggestionAction({
+          requestId: request.id,
+          startPos: range.start,
+          endPos: range.end,
+          replacement,
+        });
+        if (!res.ok) {
+          setError(res.error);
+          return;
+        }
+        router.refresh();
+      } finally {
+        commentBusyRef.current = false;
+      }
+    });
   };
 
   const captureRepin = () => {
@@ -429,9 +558,13 @@ export function ReviewWorkspace({
   };
 
   const onCurrentMouseUp = () => {
-    if (editMode) return;
     if (repinForRef.current) captureRepin();
     else captureSelection();
+  };
+
+  const saveSuggestion = () => {
+    if (!suggest || commentBusyRef.current) return;
+    persistSuggestion(suggest, suggestText);
   };
 
   useEffect(() => {
@@ -450,6 +583,19 @@ export function ReviewWorkspace({
     }, 0);
     return () => window.clearTimeout(id);
   }, [composer]);
+
+  useEffect(() => {
+    if (!suggest) return;
+    setRightOpen(true);
+    const id = window.setTimeout(() => {
+      const el = suggestInputRef.current;
+      if (!el) return;
+      el.focus();
+      const n = el.value.length;
+      el.setSelectionRange(n, n);
+    }, 0);
+    return () => window.clearTimeout(id);
+  }, [suggest]);
 
   const saveComment = () => {
     if (!composer || !coText.trim() || commentBusyRef.current) return;
@@ -644,25 +790,20 @@ export function ReviewWorkspace({
     });
   };
 
-  const saveEdit = () => {
-    const text = editRef.current?.innerText ?? '';
-    if (!text.trim() || shippingRef.current) return;
+  const saveEdits = () => {
+    if (shippingRef.current) return;
+    if (pendingSuggestions.length > 0) {
+      setError('Accept or reject open suggestions first');
+      return;
+    }
     shippingRef.current = true;
     setShipping(true);
+    setError(null);
     startTransition(async () => {
       try {
-        const res = await shipAction({
-          requestId: request.id,
-          kind: 'approve_edited',
-          editedContentMd: text,
-          acknowledgeInterstitials: true,
-        });
-        if (res.ok) {
-          setAckNeeded(false);
-          await advance(res.data?.nextRequestId, res.data?.nextLeaseMine);
-        } else {
-          setError(res.error);
-        }
+        const res = await saveManualEditsAction(request.id);
+        if (!res.ok) setError(res.error);
+        else router.refresh();
       } finally {
         shippingRef.current = false;
         setShipping(false);
@@ -699,6 +840,10 @@ export function ReviewWorkspace({
 
   const fireMainVerdict = () => {
     if (shippingRef.current) return;
+    if (appliedSuggestions.length > 0) {
+      saveEdits();
+      return;
+    }
     if (unscored > 0) {
       setError(`Score all criteria to proceed — ${unscored} left`);
       return;
@@ -715,6 +860,10 @@ export function ReviewWorkspace({
     shipVerdict('approve', ackNeeded, acceptVersionId);
   };
   mainVerdictRef.current = fireMainVerdict;
+  openCommentOnRef.current = openCommentOn;
+  startSuggestDraftRef.current = startSuggestDraft;
+  persistSuggestionRef.current = persistSuggestion;
+  readSelectionRef.current = readSelection;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -734,6 +883,8 @@ export function ReviewWorkspace({
         if (inField) return;
         setComposer(null);
         setEditing(null);
+        setLiveSel(null);
+        setSuggest(null);
         return;
       }
       // ⌘↵ ships the main verdict — unless the composer is open. PR #5 bound
@@ -759,7 +910,30 @@ export function ReviewWorkspace({
         mainVerdictRef.current?.();
         return;
       }
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.shiftKey &&
+        (e.code === 'KeyM' || e.key === 'm' || e.key === 'M')
+      ) {
+        e.preventDefault();
+        const range = liveSelRef.current ?? readSelectionRef.current();
+        if (range) openCommentOnRef.current(range);
+        return;
+      }
       if (inField) return;
+      const live = liveSelRef.current;
+      if (live && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        if (e.key === 'Backspace' || e.key === 'Delete') {
+          e.preventDefault();
+          persistSuggestionRef.current(live, '');
+          return;
+        }
+        if (e.key.length === 1) {
+          e.preventDefault();
+          startSuggestDraftRef.current(live, e.key);
+          return;
+        }
+      }
       if (e.key === 'a' || e.key === 'A') captureSelection();
       const f = priorItemsRef.current.find((x) => x.id === focusFindingIdRef.current);
       if (!f) return;
@@ -789,14 +963,29 @@ export function ReviewWorkspace({
       ? 'pending'
       : machineReview?.failed
         ? 'failed'
-        : null;
+        : machineReview?.runState === 'not_sampled'
+          ? 'not sampled'
+          : machineReview?.runState === 'completed'
+            ? 'done'
+            : null;
 
-  const showAccept = sealingPrior || !shouldReject;
+  const runState = machineReview?.runState ?? null;
+  const rerunAllowed = Boolean(
+    machineReview?.judgeEnabled &&
+      runState &&
+      request.status !== 'accepted' &&
+      ['completed', 'failed', 'not_sampled', 'running', 'pending'].includes(runState)
+  );
+  const rerunBusy = runState === 'running' || runState === 'pending';
+
+  const showSave = appliedSuggestions.length > 0;
+  const showAccept = !showSave && (sealingPrior || !shouldReject);
   const verdictDisabled =
     shipping ||
-    unscored > 0 ||
-    (!sealingPrior && shouldReject && rejectBlocked) ||
-    (!sealingPrior && !shouldReject && Boolean(gateInfo?.blocked));
+    (showSave && pendingSuggestions.length > 0) ||
+    (!showSave && unscored > 0) ||
+    (!showSave && !sealingPrior && shouldReject && rejectBlocked) ||
+    (!showSave && !sealingPrior && !shouldReject && Boolean(gateInfo?.blocked));
 
   const verdictTitle = unscored > 0
     ? `Score all criteria to proceed — ${unscored} left`
@@ -825,7 +1014,7 @@ export function ReviewWorkspace({
         >
           {p.segs.map((seg) => (
             <span
-              key={`${seg.start}-${seg.pending ? 'p' : ''}-${seg.judge ?? ''}-${seg.ann?.id ?? ''}`}
+              key={`${seg.start}-${seg.pending ? 'p' : ''}-${seg.suggestion ? 's' : ''}-${seg.judge ?? ''}-${seg.ann?.id ?? ''}`}
               data-seg-start={seg.start}
               data-judge-hl={seg.judge ? '1' : undefined}
               style={
@@ -833,20 +1022,28 @@ export function ReviewWorkspace({
                   ? annStyle(seg.ann)
                   : seg.pending
                     ? pendingStyle
-                    : seg.judge === 'pass'
-                      ? judgePassStyle
-                      : seg.judge === 'fail'
-                        ? judgeFailStyle
-                        : undefined
+                    : seg.suggestion
+                      ? suggestionStyle
+                      : seg.judge === 'pass'
+                        ? judgePassStyle
+                        : seg.judge === 'fail'
+                          ? judgeFailStyle
+                          : undefined
               }
               title={
                 seg.ann
                   ? seg.ann.body
                   : seg.pending
-                    ? 'Selected — write the comment'
-                    : seg.judge
-                      ? `Judge: ${seg.judge}`
-                      : undefined
+                    ? composer
+                      ? 'Selected — write the comment'
+                      : suggest
+                        ? 'Selected — write the replacement'
+                        : 'Selected — type to suggest, ⌘⇧M to comment'
+                    : seg.suggestion
+                      ? 'Pending suggestion'
+                      : seg.judge
+                        ? `Judge: ${seg.judge}`
+                        : undefined
               }
             >
               {seg.text}
@@ -897,6 +1094,7 @@ export function ReviewWorkspace({
         >
           ← Back to queue
         </Link>
+        {remainingWork && <RemainingWorkChip work={remainingWork} />}
         {unresolved.length > 0 && (
           <span
             style={{
@@ -924,7 +1122,7 @@ export function ReviewWorkspace({
             Score all criteria to proceed — {unscored} left
           </span>
         )}
-        {splitAvailable && !editMode && (
+        {splitAvailable && (
           splitOpen ? (
             <button
               type="button"
@@ -946,7 +1144,7 @@ export function ReviewWorkspace({
           )
         )}
         <div style={{ flex: 1 }} />
-        {versionList.length > 1 && (
+        {versionList.length > 1 && appliedSuggestions.length === 0 && (
           <select
             title="Accept version"
             value={acceptVersionId}
@@ -977,21 +1175,19 @@ export function ReviewWorkspace({
           disabled={verdictDisabled}
           title={verdictTitle}
           style={{
-            background: showAccept ? 'var(--green-600)' : 'var(--red-600)',
+            background: showSave
+              ? 'var(--blue-600)'
+              : showAccept
+                ? 'var(--green-600)'
+                : 'var(--red-600)',
             color: '#fff',
-            border: `1px solid ${showAccept ? 'var(--green-600)' : 'var(--red-600)'}`,
+            border: `1px solid ${
+              showSave ? 'var(--blue-600)' : showAccept ? 'var(--green-600)' : 'var(--red-600)'
+            }`,
           }}
         >
-          {showAccept ? 'Accept' : 'Reject'}
+          {showSave ? 'Save manual edits' : showAccept ? 'Accept' : 'Reject'}
           <span style={kbdSolid}>⌘↵</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => setEditMode(true)}
-          className="ds-btn ds-btn--outline"
-          disabled={editMode}
-        >
-          Correct manually
         </button>
       </div>
 
@@ -1278,58 +1474,8 @@ export function ReviewWorkspace({
               </div>
             </>
           ) : (
-            <ArtifactPane paneRef={artifactRef} onMouseUp={editMode ? undefined : onCurrentMouseUp}>
-              {editMode ? (
-                <div style={{ padding: '24px 40px 12px', maxWidth: 760 }}>
-                  <div
-                    style={{
-                      border: '1px solid var(--blue-300)',
-                      background: 'var(--blue-50)',
-                      borderRadius: 8,
-                      padding: '8px 12px',
-                      fontSize: 12,
-                      color: 'var(--blue-900)',
-                      marginBottom: 14,
-                    }}
-                  >
-                    Correct manually — your diff is captured as a human-authored version and becomes the
-                    acceptance candidate.
-                  </div>
-                  <div
-                    ref={editRef}
-                    contentEditable
-                    suppressContentEditableWarning
-                    style={{
-                      fontSize: 15,
-                      lineHeight: 1.8,
-                      color: 'var(--slate-800)',
-                      outline: 'none',
-                      border: '1px solid var(--border)',
-                      borderRadius: 8,
-                      padding: '16px 18px',
-                      background: '#fff',
-                      whiteSpace: 'pre-wrap',
-                      minHeight: 200,
-                    }}
-                  >
-                    {contentMd}
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                    <button type="button" onClick={saveEdit} className="ds-btn ds-btn--default">
-                      Save as human version
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditMode(false)}
-                      className="ds-btn ds-btn--ghost"
-                    >
-                      Discard
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                currentParagraphs
-              )}
+            <ArtifactPane paneRef={artifactRef} onMouseUp={onCurrentMouseUp}>
+              {currentParagraphs}
             </ArtifactPane>
           )}
         </div>
@@ -1383,6 +1529,56 @@ export function ReviewWorkspace({
                 {judgeStatus && (
                   <span style={{ fontSize: 12, color: 'var(--slate-500)' }}>judge {judgeStatus}</span>
                 )}
+                {rerunAllowed &&
+                  (confirmRerun ? (
+                    <>
+                      <button
+                        type="button"
+                        className="ds-btn ds-btn--ghost"
+                        style={{ height: 28, fontSize: 12 }}
+                        onClick={() => {
+                          setConfirmRerun(false);
+                          setError(null);
+                          startTransition(async () => {
+                            const res = await rerunJudgeAction({
+                              requestId: request.id,
+                              versionId,
+                            });
+                            if (!res.ok) {
+                              setError(res.error);
+                              return;
+                            }
+                            router.refresh();
+                          });
+                        }}
+                      >
+                        Confirm rerun
+                      </button>
+                      <button
+                        type="button"
+                        className="ds-btn ds-btn--ghost"
+                        style={{ height: 28, fontSize: 12 }}
+                        onClick={() => setConfirmRerun(false)}
+                      >
+                        Cancel
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      className="ds-btn ds-btn--ghost"
+                      style={{ height: 28, fontSize: 12 }}
+                      disabled={rerunBusy}
+                      title={
+                        rerunBusy
+                          ? 'Judge is already running'
+                          : 'Run the machine judge again on this version'
+                      }
+                      onClick={() => setConfirmRerun(true)}
+                    >
+                      Rerun judge
+                    </button>
+                  ))}
                 <span
                   style={{ fontSize: 12, color: 'var(--slate-500)' }}
                   title="Policy version in effect for this review — stamped into the signed event"
@@ -1583,6 +1779,120 @@ export function ReviewWorkspace({
                     }}
                   />
                 </>
+              )}
+
+              {(pendingSuggestions.length > 0 || appliedSuggestions.length > 0 || suggest) && (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0 4px' }}>
+                    <span style={sectionHead}>Suggestions</span>
+                  </div>
+                  {suggest && (
+                    <div
+                      style={{
+                        border: '1px solid var(--blue-300)',
+                        background: 'var(--blue-50)',
+                        borderRadius: 8,
+                        padding: 12,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 8,
+                      }}
+                    >
+                      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--blue-900)' }}>
+                        Replace — “{suggest.phrase}”
+                      </span>
+                      <textarea
+                        ref={suggestInputRef}
+                        value={suggestText}
+                        onChange={(e) => setSuggestText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                            e.preventDefault();
+                            saveSuggestion();
+                          }
+                          if (e.key === 'Escape') setSuggest(null);
+                        }}
+                        rows={3}
+                        placeholder="Replacement text"
+                        style={{
+                          border: '1px solid var(--input)',
+                          borderRadius: 6,
+                          padding: '8px 10px',
+                          fontSize: 13,
+                          fontFamily: 'inherit',
+                          outline: 'none',
+                          resize: 'vertical',
+                          background: '#fff',
+                        }}
+                      />
+                      <div style={{ display: 'flex', gap: 10 }}>
+                        <button
+                          type="button"
+                          onClick={saveSuggestion}
+                          className="ds-btn ds-btn--default ds-btn--sm"
+                        >
+                          Suggest
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSuggest(null)}
+                          style={{
+                            color: 'var(--slate-500)',
+                            fontSize: 12,
+                            cursor: 'pointer',
+                            background: 'none',
+                            border: 'none',
+                          }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <SuggestionList
+                    items={suggestions}
+                    onAccept={(id) =>
+                      startTransition(async () => {
+                        await acceptSuggestionAction(request.id, id);
+                        router.refresh();
+                      })
+                    }
+                    onReject={(id) =>
+                      startTransition(async () => {
+                        await rejectSuggestionAction(request.id, id);
+                        router.refresh();
+                      })
+                    }
+                  />
+                </>
+              )}
+
+              {liveSel && !composer && !suggest && (
+                <div
+                  style={{
+                    border: '1px solid var(--amber-500)',
+                    background: 'var(--amber-50)',
+                    borderRadius: 8,
+                    padding: 12,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
+                  <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--amber-900)' }}>
+                    Selected — “{liveSel.phrase}”
+                  </span>
+                  <span style={{ fontSize: 12, color: 'var(--slate-500)' }}>
+                    Type to replace · Backspace to delete · ⌘⇧M to comment
+                  </span>
+                  <button
+                    type="button"
+                    className="ds-btn ds-btn--ghost ds-btn--sm"
+                    onClick={() => openCommentOn(liveSel)}
+                  >
+                    Comment
+                  </button>
+                </div>
               )}
 
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 0 4px' }}>

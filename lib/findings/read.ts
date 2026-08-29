@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { judgeRuns, machineFindings, reviewRequests } from '@/lib/db/schema';
 import { DbOrTx } from '@/lib/core/eventlog';
 
@@ -91,7 +91,8 @@ export async function untriagedFindings(db: DbOrTx, requestId: string, versionId
       and(
         eq(machineFindings.requestId, requestId),
         eq(machineFindings.versionId, versionId),
-        eq(machineFindings.triage, 'untriaged')
+        eq(machineFindings.triage, 'untriaged'),
+        isNull(machineFindings.purgedAt)
       )
     );
 }
