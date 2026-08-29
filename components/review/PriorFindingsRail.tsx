@@ -5,7 +5,7 @@ import { artifactStateColors } from './ArtifactPane';
 
 /**
  * Prior-findings cards: Resolved C · Persists P · Re-pin O · Retire X.
- * Compare and the round-2+ workspace rail both mount this list so C then
+ * Workspace rail: Resolved C · Persists P · Re-pin O · Retire X, so C then
  * Approve is not hidden on another screen.
  */
 

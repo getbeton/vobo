@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { archiveRequestsAction, claimAction, releaseAction } from '@/lib/actions/review';
 import { reviewHref, type QueueRef } from '@/lib/shell/crumbs';
+import type { RemainingWork } from '@/lib/core/metrics';
+import { RemainingWorkChip } from './RemainingWorkChip';
 
 /**
  * Reviewer Queue — verbatim port of the prototype's queue screen:
@@ -205,6 +207,7 @@ export function QueueScreen({
   archivedHref = '/queue/archived',
   failingHref = null,
   queueRef = null,
+  remainingWork = null,
 }: {
   rows: QueueRowData[];
   nextUp: QueueRowData | null;
@@ -217,6 +220,7 @@ export function QueueScreen({
   failingHref?: string | null;
   /** Current queue. Used to keep project/queue/env on Proceed. */
   queueRef?: QueueRef | null;
+  remainingWork?: RemainingWork | null;
 }) {
   const router = useRouter();
   const [focusIdx, setFocusIdx] = useState(0);
@@ -317,6 +321,7 @@ export function QueueScreen({
       <div style={{ maxWidth: 880, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 18, fontWeight: 600 }}>Reviewer queue</span>
+          {remainingWork && <RemainingWorkChip work={remainingWork} />}
           {failingHref && (
             <Link
               href={failingHref}

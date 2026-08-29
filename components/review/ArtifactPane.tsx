@@ -3,9 +3,9 @@
 import { useEffect, type CSSProperties, type ReactNode, type Ref, type RefObject } from 'react';
 
 /**
- * Shared scroll pane for the review artifact. Version compare and the
- * round-2+ workspace split both render previous | current through this, so
- * selection math (`data-seg-start`) and `data-side` stay one contract.
+ * Shared scroll pane for the review artifact. The round-2+ workspace split
+ * renders previous | current through this, so selection math (`data-seg-start`)
+ * and `data-side` stay one contract.
  */
 
 export const artifactStateColors: Record<string, { bg: string; fg: string; border: string }> = {
@@ -105,7 +105,7 @@ export function ArtifactPane({
       ref={paneRef}
       onMouseUp={onMouseUp}
       data-side={side}
-      tabIndex={side === 'right' ? 0 : undefined}
+      tabIndex={onMouseUp || side === 'right' ? 0 : undefined}
       style={{
         flex: 1,
         minWidth: 0,
