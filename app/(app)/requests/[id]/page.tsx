@@ -87,14 +87,6 @@ export default async function TimelinePage({ params }: { params: Promise<{ id: s
             </span>
           )}
           <div style={{ flex: 1 }} />
-          {versions.length > 1 && (
-            <Link
-              href={`/review/${request.id}/compare`}
-              style={{ fontSize: 13, color: 'var(--blue-700)', textDecoration: 'none', fontWeight: 500 }}
-            >
-              Open compare
-            </Link>
-          )}
         </div>
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

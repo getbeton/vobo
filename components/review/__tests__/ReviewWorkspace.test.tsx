@@ -1,10 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import {
   ReviewWorkspace,
   AnnotationData,
   CriterionData,
 } from '../ReviewWorkspace';
+import { remainingWork } from '@/lib/core/metrics';
 
 /**
  * VOBO-231. PR #5 fixed three things a reviewer can only see on screen: the
@@ -23,11 +24,20 @@ const addComment = vi.fn(async (_payload: unknown) => ({
 const editComment = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
 const resolveComment = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
 const setCriterion = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
+const confirmRes = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
+const persist = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
+const repin = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
+const retire = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
 const ship = vi.fn(async (_payload: unknown) => ({
   ok: true as const,
   data: { nextRequestId: null as string | null, nextLeaseMine: false },
 }));
 const claim = vi.fn(async () => ({ ok: true as const }));
+const createSuggestion = vi.fn(async () => ({ ok: true as const, data: { suggestionId: 's1' } }));
+const acceptSuggestion = vi.fn(async () => ({ ok: true as const }));
+const rejectSuggestion = vi.fn(async () => ({ ok: true as const }));
+const saveEdits = vi.fn(async () => ({ ok: true as const, data: { round: 2 } }));
+const rerunJudge = vi.fn(async () => ({ ok: true as const }));
 const routerPush = vi.fn();
 const routerRefresh = vi.fn();
 
@@ -36,10 +46,19 @@ vi.mock('@/lib/actions/review', () => ({
   editCommentAction: (...args: unknown[]) => editComment(...args),
   resolveCommentAction: (...args: unknown[]) => resolveComment(...args),
   setCriterionAction: (...args: unknown[]) => setCriterion(...args),
+  confirmResolutionAction: (...args: unknown[]) => confirmRes(...args),
+  markPersistingAction: (...args: unknown[]) => persist(...args),
+  repinAction: (...args: unknown[]) => repin(...args),
+  retireAction: (...args: unknown[]) => retire(...args),
   confirmFindingAction: async () => ({ ok: true }),
   dismissFindingAction: async () => ({ ok: true }),
   shipAction: (payload: unknown) => ship(payload),
   claimAction: (...args: unknown[]) => claim(...args),
+  createSuggestionAction: (...args: unknown[]) => createSuggestion(...args),
+  acceptSuggestionAction: (...args: unknown[]) => acceptSuggestion(...args),
+  rejectSuggestionAction: (...args: unknown[]) => rejectSuggestion(...args),
+  saveManualEditsAction: (...args: unknown[]) => saveEdits(...args),
+  rerunJudgeAction: (...args: unknown[]) => rerunJudge(...args),
   gateAction: async () => ({ ok: true, data: { blocked: false, reasons: [], interstitials: [] } }),
 }));
 
@@ -104,6 +123,11 @@ function selectInArtifact(from: number, to: number) {
   fireEvent.mouseUp(seg);
 }
 
+function commentOnSelection(from: number, to: number) {
+  selectInArtifact(from, to);
+  fireEvent.keyDown(window, { key: 'm', code: 'KeyM', metaKey: true, shiftKey: true });
+}
+
 describe('ReviewWorkspace — the comment composer', () => {
   beforeEach(() => {
     addComment.mockClear();
@@ -112,22 +136,21 @@ describe('ReviewWorkspace — the comment composer', () => {
     ship.mockClear();
   });
 
-  it('marks the selected range while the composer is open', async () => {
+  it('marks the selected range without opening a comment', async () => {
     renderWorkspace();
     selectInArtifact(4, 15);
-    const marked = await screen.findByTitle('Selected — write the comment');
+    const marked = await screen.findByTitle(/type to suggest/i);
     expect(marked).toBeTruthy();
-    // Amber and dashed, so it does not read as a saved annotation.
     expect(marked.getAttribute('style')).toContain('dashed');
     expect(marked.textContent).toBe('first claim');
-    expect(marked.textContent).toBe(CONTENT.slice(4, 15));
+    expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
   });
 
-  it('puts the cursor in the comment box', async () => {
+  it('Cmd+Shift+M opens the comment box in the right pane and focuses it', async () => {
     renderWorkspace();
     fireEvent.click(screen.getByTitle('Hide review pane'));
     expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
-    selectInArtifact(4, 15);
+    commentOnSelection(4, 15);
     const box = await screen.findByPlaceholderText(/what’s wrong here/i);
     expect(box).toBeTruthy();
     await waitFor(() => expect(document.activeElement).toBe(box));
@@ -141,7 +164,7 @@ describe('ReviewWorkspace — the comment composer', () => {
       renderWorkspace();
       fireEvent.click(screen.getByTitle('Hide review pane'));
       expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
-      selectInArtifact(4, 15);
+      commentOnSelection(4, 15);
       const box = await screen.findByPlaceholderText(/what’s wrong here/i);
       expect(box).toBeTruthy();
       await waitFor(() => expect(document.activeElement).toBe(box));
@@ -156,7 +179,7 @@ describe('ReviewWorkspace — the comment composer', () => {
 
   it('clears the mark when the composer closes', async () => {
     renderWorkspace();
-    selectInArtifact(4, 15);
+    commentOnSelection(4, 15);
     await screen.findByTitle('Selected — write the comment');
     fireEvent.click(screen.getByText('Cancel'));
     await waitFor(() =>
@@ -166,7 +189,7 @@ describe('ReviewWorkspace — the comment composer', () => {
 
   it('saves on Cmd+Enter with the captured range', async () => {
     renderWorkspace();
-    selectInArtifact(4, 15);
+    commentOnSelection(4, 15);
     const box = await screen.findByPlaceholderText(/what’s wrong here/i);
     fireEvent.change(box, { target: { value: 'This claim is not in the dossier.' } });
     fireEvent.keyDown(box, { key: 'Enter', metaKey: true });
@@ -181,7 +204,7 @@ describe('ReviewWorkspace — the comment composer', () => {
 
   it('saves on Ctrl+Enter too', async () => {
     renderWorkspace();
-    selectInArtifact(4, 15);
+    commentOnSelection(4, 15);
     const box = await screen.findByPlaceholderText(/what’s wrong here/i);
     fireEvent.change(box, { target: { value: 'Non-Mac keyboard.' } });
     fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true });
@@ -190,7 +213,7 @@ describe('ReviewWorkspace — the comment composer', () => {
 
   it('closes on Escape without saving', async () => {
     renderWorkspace();
-    selectInArtifact(4, 15);
+    commentOnSelection(4, 15);
     const box = await screen.findByPlaceholderText(/what’s wrong here/i);
     fireEvent.change(box, { target: { value: 'Never sent.' } });
     fireEvent.keyDown(box, { key: 'Escape' });
@@ -202,7 +225,7 @@ describe('ReviewWorkspace — the comment composer', () => {
 
   it('has no Expected input', async () => {
     renderWorkspace();
-    selectInArtifact(4, 15);
+    commentOnSelection(4, 15);
     await screen.findByPlaceholderText(/what’s wrong here/i);
     expect(screen.queryByPlaceholderText(/Expected/i)).toBeNull();
   });
@@ -260,49 +283,143 @@ describe('ReviewWorkspace — editing a comment', () => {
   });
 });
 
-function typeInEditor(text: string) {
-  const box = document.querySelector('[contenteditable]') as HTMLElement;
-  expect(box, 'edit mode renders a contenteditable').toBeTruthy();
-  box.innerText = text;
-}
-
-describe('VOBO-282: human save in edit mode', () => {
-  beforeEach(() => ship.mockClear());
-
-  it('ships approve_edited with the artifact text even on the last policy round', async () => {
-    render(
-      <ReviewWorkspace
-        request={{ ...REQUEST, round: 3, roundBudget: 3 }}
-        contentMd={CONTENT}
-        versionId="v3"
-        annotations={[]}
-        criteria={[{ id: 'c1', title: 'Voice', description: null, verdict: null }]}
-        files={[]}
-      />
-    );
-    fireEvent.click(screen.getByRole('button', { name: /Correct manually/i }));
-    typeInEditor(CONTENT);
-    fireEvent.click(screen.getByRole('button', { name: /Save as human version/i }));
-    await waitFor(() => expect(ship).toHaveBeenCalled());
-    expect(ship.mock.calls[0][0]).toMatchObject({
-      requestId: 'r1',
-      kind: 'approve_edited',
-      editedContentMd: CONTENT,
-    });
+describe('VOBO-291: Comment | Edit and suggestions', () => {
+  beforeEach(() => {
+    createSuggestion.mockClear();
+    acceptSuggestion.mockClear();
+    saveEdits.mockClear();
+    ship.mockClear();
   });
 
-  it('keeps edit mode and shows the API reason when save fails', async () => {
-    ship.mockResolvedValueOnce({
-      ok: false as const,
-      error: 'Score all criteria to proceed — 1 left',
-      code: 'criteria_unscored',
-    });
+  it('Correct manually is gone; select does not open a comment', async () => {
     renderWorkspace();
-    fireEvent.click(screen.getByRole('button', { name: /Correct manually/i }));
-    typeInEditor(CONTENT);
-    fireEvent.click(screen.getByRole('button', { name: /Save as human version/i }));
-    await waitFor(() => expect(screen.getByText(/Score all criteria to proceed — 1 left/)).toBeTruthy());
-    expect(screen.getByRole('button', { name: /Save as human version/i })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Correct manually/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Edit$/ })).toBeNull();
+    selectInArtifact(4, 15);
+    expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
+    expect(await screen.findByTitle(/type to suggest/i)).toBeTruthy();
+  });
+
+  it('typing on a selection starts a replacement suggestion', async () => {
+    renderWorkspace();
+    selectInArtifact(4, 15);
+    fireEvent.keyDown(window, { key: 'o' });
+    const box = await screen.findByPlaceholderText(/Replacement text/i);
+    expect((box as HTMLTextAreaElement).value).toBe('o');
+    expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
+    fireEvent.change(box, { target: { value: 'opening line' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Suggest$/ }));
+    await waitFor(() => expect(createSuggestion).toHaveBeenCalled());
+    expect(createSuggestion.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        requestId: 'r1',
+        startPos: 4,
+        endPos: 15,
+        replacement: 'opening line',
+      })
+    );
+  });
+
+  it('Backspace on a selection suggests deleting that span', async () => {
+    renderWorkspace();
+    selectInArtifact(4, 15);
+    fireEvent.keyDown(window, { key: 'Backspace' });
+    await waitFor(() => expect(createSuggestion).toHaveBeenCalled());
+    expect(createSuggestion.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        requestId: 'r1',
+        startPos: 4,
+        endPos: 15,
+        replacement: '',
+      })
+    );
+  });
+
+  it('Accept on a pending suggestion does not write a version', async () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        suggestions={[
+          {
+            id: 's1',
+            startPos: 4,
+            endPos: 15,
+            originalQuote: 'first claim',
+            replacement: 'opening line',
+            status: 'pending',
+          },
+        ]}
+      />
+    );
+    fireEvent.click(within(screen.getByTestId('suggestion-s1')).getByRole('button', { name: /^Accept$/ }));
+    await waitFor(() => expect(acceptSuggestion).toHaveBeenCalledWith('r1', 's1'));
+    expect(ship).not.toHaveBeenCalled();
+    expect(saveEdits).not.toHaveBeenCalled();
+  });
+
+  it('applied suggestions arm Save manual edits; pending blocks it', () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        suggestions={[
+          {
+            id: 's1',
+            startPos: 4,
+            endPos: 15,
+            originalQuote: 'first claim',
+            replacement: 'opening line',
+            status: 'applied',
+          },
+          {
+            id: 's2',
+            startPos: 20,
+            endPos: 26,
+            originalQuote: 'second',
+            replacement: 'next',
+            status: 'pending',
+          },
+        ]}
+      />
+    );
+    const btn = screen.getByTestId('verdict-button') as HTMLButtonElement;
+    expect(btn.textContent).toMatch(/Save manual edits/);
+    expect(btn.disabled).toBe(true);
+  });
+
+  it('Save manual edits persists without shipping accept or reject', async () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        suggestions={[
+          {
+            id: 's1',
+            startPos: 4,
+            endPos: 15,
+            originalQuote: 'first claim',
+            replacement: 'opening line',
+            status: 'applied',
+          },
+        ]}
+      />
+    );
+    fireEvent.click(screen.getByTestId('verdict-button'));
+    await waitFor(() => expect(saveEdits).toHaveBeenCalledWith('r1'));
+    expect(ship).not.toHaveBeenCalled();
   });
 });
 
@@ -359,6 +476,154 @@ describe('VOBO-269: review navigation keeps the working queue', () => {
     await waitFor(() => expect(routerPush).toHaveBeenCalled());
     expect(routerPush).toHaveBeenCalledWith(QUEUE_HREF);
     expect(routerPush.mock.calls.flat()).not.toContain('/queue');
+  });
+});
+
+const PREV = 'We sincerely apologize for the interruption.';
+
+describe('VOBO-276: round 2+ opens split and accepts a comment on the current pane', () => {
+  beforeEach(() => {
+    addComment.mockClear();
+    setCriterion.mockClear();
+  });
+
+  function renderRound2() {
+    return render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, round: 2 }}
+        contentMd={CONTENT}
+        previousContentMd={PREV}
+        versionId="v2"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+      />
+    );
+  }
+
+  it('round ≥ 2 shows previous left and current right', () => {
+    renderRound2();
+    expect(document.querySelector('[data-side="left"]')).toBeTruthy();
+    expect(document.querySelector('[data-side="right"]')).toBeTruthy();
+    expect(document.querySelector('[data-side="right"]')?.textContent).toContain('first claim');
+  });
+
+  it('round 1 stays a single pane', () => {
+    renderWorkspace();
+    expect(document.querySelector('[data-side="left"]')).toBeNull();
+    expect(document.querySelector('[data-side="right"]')).toBeNull();
+  });
+
+  it('Current only restores the single pane of the current version', () => {
+    renderRound2();
+    fireEvent.click(screen.getByRole('button', { name: /Current only/i }));
+    expect(document.querySelector('[data-side="left"]')).toBeNull();
+    expect(screen.getByText(/first claim/)).toBeTruthy();
+  });
+
+  it('selecting on the right pane plus ⌘⇧M opens the composer', async () => {
+    renderRound2();
+    const pane = document.querySelector('[data-side="right"]') as HTMLElement;
+    const seg = pane.querySelector('[data-seg-start]') as HTMLElement;
+    const textNode = seg.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(textNode, 4);
+    range.setEnd(textNode, 15);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    fireEvent.mouseUp(seg);
+    fireEvent.keyDown(window, { key: 'm', code: 'KeyM', metaKey: true, shiftKey: true });
+    expect(await screen.findByPlaceholderText(/what’s wrong here/i)).toBeTruthy();
+  });
+
+  it('selecting on the left pane does not open the composer', () => {
+    renderRound2();
+    const pane = document.querySelector('[data-side="left"]') as HTMLElement;
+    const seg = pane.querySelector('[data-seg-start]') as HTMLElement;
+    const textNode = seg.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 2);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    fireEvent.mouseUp(seg);
+    expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
+  });
+
+  it('has no Compare link — the split is the station', () => {
+    renderRound2();
+    expect(screen.queryByRole('link', { name: /Compare/i })).toBeNull();
+  });
+
+  it('criteria stay on the split and can be scored', async () => {
+    render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, round: 2 }}
+        contentMd={CONTENT}
+        previousContentMd={PREV}
+        versionId="v2"
+        annotations={[]}
+        criteria={[
+          { id: 'c1', title: 'Voice', description: null, verdict: null },
+        ]}
+        files={[]}
+      />
+    );
+    expect(document.querySelector('[data-side="right"]')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Pass' }));
+    await waitFor(() => expect(setCriterion).toHaveBeenCalledWith('r1', 'c1', 'pass'));
+    expect(document.querySelector('[data-side="left"]')).toBeTruthy();
+  });
+});
+
+const PRIOR: AnnotationData = {
+  id: 'p1',
+  body: 'Drop the apology.',
+  expected: null,
+  quote: 'sincerely',
+  startPos: 3,
+  endPos: 12,
+  bornRound: 1,
+  resolved: false,
+  state: 'orphaned',
+  confirmation: null,
+};
+
+describe('VOBO-278: prior findings live on the workspace rail', () => {
+  beforeEach(() => {
+    confirmRes.mockClear();
+    addComment.mockClear();
+  });
+
+  function renderSplitWithPrior() {
+    return render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, round: 2 }}
+        contentMd={CONTENT}
+        previousContentMd={PREV}
+        versionId="v2"
+        annotations={[PRIOR]}
+        criteria={CRITERIA}
+        files={[]}
+      />
+    );
+  }
+
+  it('shows Resolved / Persists / Re-pin / Retire on a prior finding', () => {
+    renderSplitWithPrior();
+    expect(screen.getByRole('button', { name: /Resolved/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Persists/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Re-pin/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Retire/i })).toBeTruthy();
+  });
+
+  it('Resolved confirms against the current version without leaving split', async () => {
+    renderSplitWithPrior();
+    fireEvent.click(screen.getByRole('button', { name: /Resolved/i }));
+    await waitFor(() => expect(confirmRes).toHaveBeenCalledWith('r1', 'p1', 'v2'));
+    expect(document.querySelector('[data-side="right"]')).toBeTruthy();
   });
 });
 
@@ -483,6 +748,72 @@ describe('ReviewWorkspace — criterion cards', () => {
   });
 });
 
+const VERSIONS = [
+  { id: 'v1', number: 1, author: 'model', hash: 'aaaa1111' },
+  { id: 'v2', number: 2, author: 'model', hash: 'bbbb2222' },
+];
+
+const ROUND2_COMMENT: AnnotationData = {
+  ...OPEN_COMMENT,
+  id: 'a2',
+  bornRound: 2,
+  body: 'Still invented.',
+};
+
+describe('VOBO-289: Accept can seal an older version', () => {
+  beforeEach(() => ship.mockClear());
+
+  it('shows a version selector defaulting to the current version', () => {
+    render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, round: 2 }}
+        contentMd={CONTENT}
+        previousContentMd={PREV}
+        versionId="v2"
+        versions={VERSIONS}
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+      />
+    );
+    const sel = screen.getByTitle('Accept version') as HTMLSelectElement;
+    expect(sel.value).toBe('v2');
+    expect(sel.querySelectorAll('option')).toHaveLength(2);
+  });
+
+  it('picking v1 with an open comment on v2 ships Accept of v1', async () => {
+    render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, round: 2 }}
+        contentMd={CONTENT}
+        previousContentMd={PREV}
+        versionId="v2"
+        versions={VERSIONS}
+        annotations={[ROUND2_COMMENT]}
+        criteria={CRITERIA}
+        files={[]}
+      />
+    );
+    expect(screen.getByTestId('verdict-button').textContent).toMatch(/Reject/);
+    fireEvent.change(screen.getByTitle('Accept version'), { target: { value: 'v1' } });
+    expect(screen.getByTestId('verdict-button').textContent).toMatch(/Accept/);
+    fireEvent.click(screen.getByTestId('verdict-button'));
+    await waitFor(() => expect(ship).toHaveBeenCalled());
+    expect(ship.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        requestId: 'r1',
+        kind: 'approve',
+        acceptedVersionId: 'v1',
+      })
+    );
+  });
+
+  it('round 1 with one version has no selector', () => {
+    renderWorkspace();
+    expect(screen.queryByTitle('Accept version')).toBeNull();
+  });
+});
+
 describe('ReviewWorkspace — the single verdict button', () => {
   beforeEach(() => {
     ship.mockClear();
@@ -557,6 +888,155 @@ describe('ReviewWorkspace — the single verdict button', () => {
     await waitFor(() => expect(ship).toHaveBeenCalledTimes(1));
     expect(ship.mock.calls[0][0]).toEqual(
       expect.objectContaining({ requestId: 'r1', kind: 'reject_rerun' })
+    );
+  });
+});
+
+describe('VOBO-296: remaining work on the workspace top bar', () => {
+  const work = remainingWork([
+    ...Array.from({ length: 15 }, () => ({ status: 'accepted' })),
+    ...Array.from({ length: 64 }, () => ({ status: 'open' })),
+    ...Array.from({ length: 2 }, () => ({ status: 'claimed' })),
+    ...Array.from({ length: 4 }, () => ({ status: 'rejected' })),
+  ]);
+
+  it('shows the same remaining/accepted pair as the queue', () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        remainingWork={work}
+      />
+    );
+    const chip = screen.getByTestId('remaining-work');
+    expect(chip.textContent).toBe('70 remaining · 15 accepted');
+    expect(chip.getAttribute('title')).toContain('rejected 4');
+    expect(screen.getByText('← Back to queue')).toBeTruthy();
+  });
+
+  it('after accept, remaining drops by one on refresh', () => {
+    const after = remainingWork([
+      ...Array.from({ length: 16 }, () => ({ status: 'accepted' })),
+      ...Array.from({ length: 63 }, () => ({ status: 'open' })),
+      ...Array.from({ length: 2 }, () => ({ status: 'claimed' })),
+      ...Array.from({ length: 4 }, () => ({ status: 'rejected' })),
+    ]);
+    render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, status: 'accepted' }}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        remainingWork={after}
+      />
+    );
+    expect(screen.getByTestId('remaining-work').textContent).toBe('69 remaining · 16 accepted');
+  });
+});
+
+describe('VOBO-298: Rerun judge control', () => {
+  beforeEach(() => {
+    rerunJudge.mockClear();
+  });
+
+  it('shows Rerun judge when the current run is completed', () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        machineReview={{
+          withheld: false,
+          pending: false,
+          failed: false,
+          overallScore: 0.5,
+          runState: 'completed',
+          judgeEnabled: true,
+        }}
+      />
+    );
+    expect(screen.getByRole('button', { name: 'Rerun judge' })).toBeTruthy();
+  });
+
+  it('disables Rerun judge while the run is running', () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        machineReview={{
+          withheld: false,
+          pending: true,
+          failed: false,
+          overallScore: null,
+          runState: 'running',
+          judgeEnabled: true,
+        }}
+      />
+    );
+    expect((screen.getByRole('button', { name: 'Rerun judge' }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
+  });
+
+  it('hides Rerun judge on an accepted request', () => {
+    render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, status: 'accepted' }}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        machineReview={{
+          withheld: false,
+          pending: false,
+          failed: false,
+          overallScore: 0.5,
+          runState: 'completed',
+          judgeEnabled: true,
+        }}
+      />
+    );
+    expect(screen.queryByRole('button', { name: 'Rerun judge' })).toBeNull();
+  });
+
+  it('does not call rerun until the reviewer confirms', async () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        machineReview={{
+          withheld: false,
+          pending: false,
+          failed: false,
+          overallScore: 0.5,
+          runState: 'completed',
+          judgeEnabled: true,
+        }}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Rerun judge' }));
+    expect(rerunJudge).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm rerun' }));
+    await waitFor(() =>
+      expect(rerunJudge).toHaveBeenCalledWith({ requestId: 'r1', versionId: 'v1' })
     );
   });
 });

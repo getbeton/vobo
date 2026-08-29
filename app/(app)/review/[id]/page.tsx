@@ -14,10 +14,12 @@ import {
   queues,
   projects,
   judgeRecords,
+  manualEdits,
 } from '@/lib/db/schema';
 import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
 import { NoAccess } from '@/components/shell/NoAccess';
 import { parsePolicyConfig } from '@/lib/core/policy';
+import { remainingWorkForQueue } from '@/lib/core/remaining-work';
 import { ReviewWorkspace } from '@/components/review/ReviewWorkspace';
 import { readFindings } from '@/lib/findings/read';
 import { mergeReviewSearch } from '@/lib/shell/crumbs';
@@ -29,7 +31,13 @@ export default async function ReviewPage({
   searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ project?: string; queue?: string; env?: string }>;
+  searchParams: Promise<{
+    project?: string;
+    queue?: string;
+    env?: string;
+    l?: string;
+    r?: string;
+  }>;
 }) {
   const { id } = await params;
   const sp = await searchParams;
@@ -63,6 +71,16 @@ export default async function ReviewPage({
     ),
   });
   if (!version) notFound();
+
+  const allVersions = await db
+    .select()
+    .from(artifactVersions)
+    .where(eq(artifactVersions.requestId, request.id))
+    .orderBy(asc(artifactVersions.versionNumber));
+  const previous =
+    request.round >= 2
+      ? allVersions.find((v) => v.versionNumber === request.round - 1) ?? null
+      : null;
 
   const anns = await db
     .select({ ann: annotations, state: anchorStates })
@@ -132,7 +150,14 @@ export default async function ReviewPage({
         budgetExhausted: Boolean(request.budgetExhaustedAt),
       }}
       contentMd={version.contentMd}
+      previousContentMd={previous?.contentMd ?? null}
       versionId={version.id}
+      versions={allVersions.map((v) => ({
+        id: v.id,
+        number: v.versionNumber,
+        author: v.authorLabel ?? (v.humanAuthored ? 'human' : 'model'),
+        hash: v.contentHash.slice(0, 8),
+      }))}
       annotations={anns.map(({ ann, state }) => ({
         id: ann.id,
         body: ann.body,
@@ -144,6 +169,15 @@ export default async function ReviewPage({
         resolved: Boolean(ann.resolvedAt),
         state: state?.state ?? (ann.bornRound === request.round ? 'new' : null),
         confirmation: state?.confirmation ?? null,
+        confidence: state?.confidence ?? null,
+        landing:
+          state?.newStartPos != null
+            ? {
+                start: state.newStartPos,
+                end: state.newEndPos ?? state.newStartPos,
+                quote: state.newQuote ?? '',
+              }
+            : null,
       }))}
       criteria={crits.map((c) => {
         const human = verdicts.find((v) => v.criterionId === c.id)?.verdict ?? null;
@@ -181,12 +215,28 @@ export default async function ReviewPage({
         };
       })}
       files={files.map((f) => ({ name: f.name, kind: f.contentType ?? 'file' }))}
+      suggestions={(
+        await db
+          .select()
+          .from(manualEdits)
+          .where(eq(manualEdits.baseVersionId, version.id))
+      ).map((s) => ({
+        id: s.id,
+        startPos: s.startPos,
+        endPos: s.endPos,
+        originalQuote: s.originalQuote,
+        replacement: s.replacement,
+        status: s.status,
+      }))}
       machineReview={{
         withheld: machine.withheld,
         pending: machine.run?.state === 'pending' || machine.run?.state === 'running',
         failed: machine.run?.state === 'failed',
         overallScore: machine.run?.overallScore ?? request.judgeOverallScore ?? null,
+        runState: machine.run?.state ?? null,
+        judgeEnabled: Boolean(policy?.judgeEnabled),
       }}
+      remainingWork={await remainingWorkForQueue(db, request.queueId)}
     />
   );
 }
