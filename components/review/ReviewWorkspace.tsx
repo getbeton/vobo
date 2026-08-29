@@ -156,6 +156,7 @@ export function ReviewWorkspace({
   contentMd,
   previousContentMd = null,
   versionId,
+  versions = [],
   annotations,
   criteria,
   files,
@@ -165,6 +166,7 @@ export function ReviewWorkspace({
   contentMd: string;
   previousContentMd?: string | null;
   versionId: string;
+  versions?: Array<{ id: string; number: number; author: string; hash: string }>;
   annotations: AnnotationData[];
   criteria: CriterionData[];
   files: Array<{ name: string; kind: string }>;
@@ -205,6 +207,12 @@ export function ReviewWorkspace({
   const [retireFor, setRetireFor] = useState<string | null>(null);
   const [retireReason, setRetireReason] = useState('');
   const [focusFindingId, setFocusFindingId] = useState<string | null>(null);
+  const [acceptVersionId, setAcceptVersionId] = useState(versionId);
+  const versionList =
+    versions.length > 0
+      ? versions
+      : [{ id: versionId, number: request.round, author: '', hash: '' }];
+  const sealingPrior = acceptVersionId !== versionId;
   // The key handler is bound once; the main verdict changes with the state.
   const mainVerdictRef = useRef<(() => void) | null>(null);
   const saveCommentRef = useRef<() => void>(() => {});
@@ -603,7 +611,11 @@ export function ReviewWorkspace({
     router.push(list);
   };
 
-  const shipVerdict = (kind: 'approve' | 'reject_corrections' | 'reject_rerun', ack = false) => {
+  const shipVerdict = (
+    kind: 'approve' | 'reject_corrections' | 'reject_rerun',
+    ack = false,
+    acceptedVersionId?: string
+  ) => {
     if (shippingRef.current) return;
     shippingRef.current = true;
     setShipping(true);
@@ -614,6 +626,7 @@ export function ReviewWorkspace({
           requestId: request.id,
           kind,
           acknowledgeInterstitials: ack,
+          ...(kind === 'approve' && acceptedVersionId ? { acceptedVersionId } : {}),
         });
         if (res.ok) {
           setAckNeeded(false);
@@ -690,12 +703,16 @@ export function ReviewWorkspace({
       setError(`Score all criteria to proceed — ${unscored} left`);
       return;
     }
+    if (sealingPrior) {
+      shipVerdict('approve', true, acceptVersionId);
+      return;
+    }
     if (shouldReject) {
       if (rejectBlocked) return;
       shipVerdict(unresolved.length > 0 ? 'reject_corrections' : 'reject_rerun');
       return;
     }
-    shipVerdict('approve', ackNeeded);
+    shipVerdict('approve', ackNeeded, acceptVersionId);
   };
   mainVerdictRef.current = fireMainVerdict;
 
@@ -774,11 +791,12 @@ export function ReviewWorkspace({
         ? 'failed'
         : null;
 
+  const showAccept = sealingPrior || !shouldReject;
   const verdictDisabled =
     shipping ||
     unscored > 0 ||
-    (shouldReject && rejectBlocked) ||
-    (!shouldReject && Boolean(gateInfo?.blocked));
+    (!sealingPrior && shouldReject && rejectBlocked) ||
+    (!sealingPrior && !shouldReject && Boolean(gateInfo?.blocked));
 
   const verdictTitle = unscored > 0
     ? `Score all criteria to proceed — ${unscored} left`
@@ -928,7 +946,22 @@ export function ReviewWorkspace({
           )
         )}
         <div style={{ flex: 1 }} />
-        {gateInfo?.blocked && !shouldReject && (
+        {versionList.length > 1 && (
+          <select
+            title="Accept version"
+            value={acceptVersionId}
+            onChange={(e) => setAcceptVersionId(e.target.value)}
+            className="ds-select-trigger"
+            style={{ width: 160, height: 36, fontSize: 12 }}
+          >
+            {versionList.map((v) => (
+              <option key={v.id} value={v.id}>
+                v{v.number} · {v.author || (v.hash ? v.hash.slice(0, 8) : 'version')}
+              </option>
+            ))}
+          </select>
+        )}
+        {gateInfo?.blocked && !shouldReject && !sealingPrior && (
           <span
             title={gateInfo.reasons.join(' · ')}
             style={{ fontSize: 12, color: 'var(--slate-500)', maxWidth: 260 }}
@@ -944,12 +977,12 @@ export function ReviewWorkspace({
           disabled={verdictDisabled}
           title={verdictTitle}
           style={{
-            background: shouldReject ? 'var(--red-600)' : 'var(--green-600)',
+            background: showAccept ? 'var(--green-600)' : 'var(--red-600)',
             color: '#fff',
-            border: `1px solid ${shouldReject ? 'var(--red-600)' : 'var(--green-600)'}`,
+            border: `1px solid ${showAccept ? 'var(--green-600)' : 'var(--red-600)'}`,
           }}
         >
-          {shouldReject ? 'Reject' : 'Accept'}
+          {showAccept ? 'Accept' : 'Reject'}
           <span style={kbdSolid}>⌘↵</span>
         </button>
         <button

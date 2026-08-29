@@ -185,6 +185,8 @@ export interface ShipInput {
   editedContentMd?: string;
   /** Ship despite untriaged machine findings. Recorded on the signed event. */
   overrideUntriagedFindings?: boolean;
+  /** Approve of a chosen version (VOBO-290). Default is the current round. */
+  acceptedVersionId?: string;
 }
 
 export async function ship(db: Db, input: ShipInput) {
@@ -204,6 +206,20 @@ export async function ship(db: Db, input: ShipInput) {
 
     const untriaged = await untriagedFindings(tx, request.id, version.id);
 
+    let chosenVersion = version;
+    if (input.kind === 'approve' && input.acceptedVersionId && input.acceptedVersionId !== version.id) {
+      const chosen = await tx.query.artifactVersions.findFirst({
+        where: and(
+          eq(artifactVersions.id, input.acceptedVersionId),
+          eq(artifactVersions.requestId, request.id)
+        ),
+      });
+      if (!chosen)
+        throw new ApiProblem(422, 'version_not_on_request', 'Chosen version is not on this request');
+      chosenVersion = chosen;
+    }
+    const sealingPrior = chosenVersion.id !== version.id;
+
     if (input.kind === 'escalate') {
       if (!input.reason || input.reason.trim().length < 4)
         throw new ApiProblem(422, 'escalation_reason_required', 'Escalation reason is required');
@@ -212,7 +228,7 @@ export async function ship(db: Db, input: ShipInput) {
       const criteriaBlock = gate.reasons.find((r) => r.startsWith('Score all criteria'));
       if (criteriaBlock) throw new ApiProblem(422, 'criteria_unscored', criteriaBlock);
 
-      if (input.kind === 'approve') {
+      if (input.kind === 'approve' && !sealingPrior) {
         if (gate.blocked)
           throw new ApiProblem(422, 'approve_blocked', gate.reasons.join(' · '));
         if (gate.interstitials.length > 0 && !input.acknowledgeInterstitials)
@@ -235,8 +251,9 @@ export async function ship(db: Db, input: ShipInput) {
     }
 
     // approve_edited: the human's fix becomes the acceptance candidate version.
-    let sealedVersionId = version.id;
-    let sealedHash = version.contentHash;
+    // approve of a prior version: seal that hash (VOBO-290).
+    let sealedVersionId = chosenVersion.id;
+    let sealedHash = chosenVersion.contentHash;
     if (input.kind === 'approve_edited') {
       if (!input.editedContentMd || !input.editedContentMd.trim())
         throw new ApiProblem(422, 'edited_content_required', 'approve_edited requires the edited content');
@@ -325,6 +342,7 @@ export async function ship(db: Db, input: ShipInput) {
         ...basePayload,
         kind: input.kind,
         sealed_hash: sealedHash,
+        accepted_version: chosenVersion.versionNumber,
       });
     } else if (input.kind === 'escalate') {
       newStatus = 'escalated';
