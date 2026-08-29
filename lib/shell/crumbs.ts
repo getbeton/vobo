@@ -67,24 +67,17 @@ export function queueListHref(ref: QueueRef): string {
   });
 }
 
-export function reviewHref(
-  requestId: string,
-  ref: QueueRef,
-  extra?: { compare?: boolean; l?: number | string; r?: number | string }
-): string {
+export function reviewHref(requestId: string, ref: QueueRef): string {
   const q = new URLSearchParams();
   q.set('project', ref.projectSlug);
   q.set('queue', ref.queueSlug);
   q.set('env', ref.environment);
-  if (extra?.l != null) q.set('l', String(extra.l));
-  if (extra?.r != null) q.set('r', String(extra.r));
-  const path = extra?.compare ? `/review/${requestId}/compare` : `/review/${requestId}`;
-  return `${path}?${q.toString()}`;
+  return `/review/${requestId}?${q.toString()}`;
 }
 
 /**
- * Fill missing project/queue/env from the request. Keep l/r.
- * `changed` means the review page should redirect to this search string.
+ * Fill missing project/queue/env from the request. Drop leftover l/r from
+ * old compare bookmarks. `changed` means the review page should redirect.
  */
 export function mergeReviewSearch(
   current: {
@@ -99,14 +92,14 @@ export function mergeReviewSearch(
   const envKnown = current.env === 'test' || current.env === 'production';
   const project = current.project || ref.projectSlug;
   const queue = current.queue || ref.queueSlug;
-  const environment: Environment = current.env === 'test' ? 'test' : envKnown ? 'production' : ref.environment;
+  const environment: Environment =
+    current.env === 'test' ? 'test' : envKnown ? 'production' : ref.environment;
   const q = new URLSearchParams();
   q.set('project', project);
   q.set('queue', queue);
   q.set('env', environment);
-  if (current.l) q.set('l', current.l);
-  if (current.r) q.set('r', current.r);
-  const changed = !current.project || !current.queue || !envKnown;
+  const leftoverPair = Boolean(current.l || current.r);
+  const changed = !current.project || !current.queue || !envKnown || leftoverPair;
   return { search: q.toString(), changed };
 }
 
