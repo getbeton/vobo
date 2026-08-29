@@ -64,6 +64,16 @@ export default async function ReviewPage({
   });
   if (!version) notFound();
 
+  const previous =
+    request.round >= 2
+      ? await db.query.artifactVersions.findFirst({
+          where: and(
+            eq(artifactVersions.requestId, request.id),
+            eq(artifactVersions.versionNumber, request.round - 1)
+          ),
+        })
+      : null;
+
   const anns = await db
     .select({ ann: annotations, state: anchorStates })
     .from(annotations)
@@ -132,6 +142,7 @@ export default async function ReviewPage({
         budgetExhausted: Boolean(request.budgetExhaustedAt),
       }}
       contentMd={version.contentMd}
+      previousContentMd={previous?.contentMd ?? null}
       versionId={version.id}
       annotations={anns.map(({ ann, state }) => ({
         id: ann.id,
@@ -144,6 +155,15 @@ export default async function ReviewPage({
         resolved: Boolean(ann.resolvedAt),
         state: state?.state ?? (ann.bornRound === request.round ? 'new' : null),
         confirmation: state?.confirmation ?? null,
+        confidence: state?.confidence ?? null,
+        landing:
+          state?.newStartPos != null
+            ? {
+                start: state.newStartPos,
+                end: state.newEndPos ?? state.newStartPos,
+                quote: state.newQuote ?? '',
+              }
+            : null,
       }))}
       criteria={crits.map((c) => {
         const human = verdicts.find((v) => v.criterionId === c.id)?.verdict ?? null;
