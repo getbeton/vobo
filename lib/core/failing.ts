@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, ne } from 'drizzle-orm';
 import { decisions, policyVersions, queues, reviewRequests } from '@/lib/db/schema';
 import { can } from './authz';
 import { Db, DbOrTx } from './eventlog';
@@ -37,7 +37,11 @@ export async function listFailingRequests(
     .innerJoin(queues, eq(queues.id, reviewRequests.queueId))
     .innerJoin(policyVersions, eq(policyVersions.id, reviewRequests.policyVersionId))
     .where(
-      and(eq(reviewRequests.queueId, input.queueId), isNotNull(reviewRequests.budgetExhaustedAt))
+      and(
+        eq(reviewRequests.queueId, input.queueId),
+        isNotNull(reviewRequests.budgetExhaustedAt),
+        ne(reviewRequests.status, 'accepted')
+      )
     )
     .orderBy(desc(reviewRequests.budgetExhaustedAt));
 
