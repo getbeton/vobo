@@ -251,6 +251,52 @@ describe('ReviewWorkspace — editing a comment', () => {
   });
 });
 
+function typeInEditor(text: string) {
+  const box = document.querySelector('[contenteditable]') as HTMLElement;
+  expect(box, 'edit mode renders a contenteditable').toBeTruthy();
+  box.innerText = text;
+}
+
+describe('VOBO-282: human save in edit mode', () => {
+  beforeEach(() => ship.mockClear());
+
+  it('ships approve_edited with the artifact text even on the last policy round', async () => {
+    render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, round: 3, roundBudget: 3 }}
+        contentMd={CONTENT}
+        versionId="v3"
+        annotations={[]}
+        criteria={[{ id: 'c1', title: 'Voice', description: null, verdict: null }]}
+        files={[]}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Correct manually/i }));
+    typeInEditor(CONTENT);
+    fireEvent.click(screen.getByRole('button', { name: /Save as human version/i }));
+    await waitFor(() => expect(ship).toHaveBeenCalled());
+    expect(ship.mock.calls[0][0]).toMatchObject({
+      requestId: 'r1',
+      kind: 'approve_edited',
+      editedContentMd: CONTENT,
+    });
+  });
+
+  it('keeps edit mode and shows the API reason when save fails', async () => {
+    ship.mockResolvedValueOnce({
+      ok: false as const,
+      error: 'Score all criteria to proceed — 1 left',
+      code: 'criteria_unscored',
+    });
+    renderWorkspace();
+    fireEvent.click(screen.getByRole('button', { name: /Correct manually/i }));
+    typeInEditor(CONTENT);
+    fireEvent.click(screen.getByRole('button', { name: /Save as human version/i }));
+    await waitFor(() => expect(screen.getByText(/Score all criteria to proceed — 1 left/)).toBeTruthy());
+    expect(screen.getByRole('button', { name: /Save as human version/i })).toBeTruthy();
+  });
+});
+
 const JUDGED: CriterionData[] = [
   {
     id: 'c1',
