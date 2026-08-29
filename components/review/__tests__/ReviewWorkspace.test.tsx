@@ -638,6 +638,72 @@ describe('ReviewWorkspace — criterion cards', () => {
   });
 });
 
+const VERSIONS = [
+  { id: 'v1', number: 1, author: 'model', hash: 'aaaa1111' },
+  { id: 'v2', number: 2, author: 'model', hash: 'bbbb2222' },
+];
+
+const ROUND2_COMMENT: AnnotationData = {
+  ...OPEN_COMMENT,
+  id: 'a2',
+  bornRound: 2,
+  body: 'Still invented.',
+};
+
+describe('VOBO-289: Accept can seal an older version', () => {
+  beforeEach(() => ship.mockClear());
+
+  it('shows a version selector defaulting to the current version', () => {
+    render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, round: 2 }}
+        contentMd={CONTENT}
+        previousContentMd={PREV}
+        versionId="v2"
+        versions={VERSIONS}
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+      />
+    );
+    const sel = screen.getByTitle('Accept version') as HTMLSelectElement;
+    expect(sel.value).toBe('v2');
+    expect(sel.querySelectorAll('option')).toHaveLength(2);
+  });
+
+  it('picking v1 with an open comment on v2 ships Accept of v1', async () => {
+    render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, round: 2 }}
+        contentMd={CONTENT}
+        previousContentMd={PREV}
+        versionId="v2"
+        versions={VERSIONS}
+        annotations={[ROUND2_COMMENT]}
+        criteria={CRITERIA}
+        files={[]}
+      />
+    );
+    expect(screen.getByTestId('verdict-button').textContent).toMatch(/Reject/);
+    fireEvent.change(screen.getByTitle('Accept version'), { target: { value: 'v1' } });
+    expect(screen.getByTestId('verdict-button').textContent).toMatch(/Accept/);
+    fireEvent.click(screen.getByTestId('verdict-button'));
+    await waitFor(() => expect(ship).toHaveBeenCalled());
+    expect(ship.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        requestId: 'r1',
+        kind: 'approve',
+        acceptedVersionId: 'v1',
+      })
+    );
+  });
+
+  it('round 1 with one version has no selector', () => {
+    renderWorkspace();
+    expect(screen.queryByTitle('Accept version')).toBeNull();
+  });
+});
+
 describe('ReviewWorkspace — the single verdict button', () => {
   beforeEach(() => {
     ship.mockClear();
