@@ -51,7 +51,9 @@ export function SuggestionList({
           <span style={{ fontSize: 12, color: 'var(--slate-500)' }}>
             “{s.originalQuote.slice(0, 40)}”
           </span>
-          <span style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.4 }}>{s.replacement}</span>
+          <span style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.4 }}>
+            {s.replacement.length > 0 ? s.replacement : '(delete)'}
+          </span>
           {s.status === 'pending' && (
             <div style={{ display: 'flex', gap: 6 }}>
               <button
