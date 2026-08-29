@@ -123,6 +123,11 @@ function selectInArtifact(from: number, to: number) {
   fireEvent.mouseUp(seg);
 }
 
+function commentOnSelection(from: number, to: number) {
+  selectInArtifact(from, to);
+  fireEvent.keyDown(window, { key: 'm', code: 'KeyM', metaKey: true, shiftKey: true });
+}
+
 describe('ReviewWorkspace — the comment composer', () => {
   beforeEach(() => {
     addComment.mockClear();
@@ -131,22 +136,21 @@ describe('ReviewWorkspace — the comment composer', () => {
     ship.mockClear();
   });
 
-  it('marks the selected range while the composer is open', async () => {
+  it('marks the selected range without opening a comment', async () => {
     renderWorkspace();
     selectInArtifact(4, 15);
-    const marked = await screen.findByTitle('Selected — write the comment');
+    const marked = await screen.findByTitle(/type to suggest/i);
     expect(marked).toBeTruthy();
-    // Amber and dashed, so it does not read as a saved annotation.
     expect(marked.getAttribute('style')).toContain('dashed');
     expect(marked.textContent).toBe('first claim');
-    expect(marked.textContent).toBe(CONTENT.slice(4, 15));
+    expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
   });
 
-  it('puts the cursor in the comment box', async () => {
+  it('Cmd+Shift+M opens the comment box in the right pane and focuses it', async () => {
     renderWorkspace();
     fireEvent.click(screen.getByTitle('Hide review pane'));
     expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
-    selectInArtifact(4, 15);
+    commentOnSelection(4, 15);
     const box = await screen.findByPlaceholderText(/what’s wrong here/i);
     expect(box).toBeTruthy();
     await waitFor(() => expect(document.activeElement).toBe(box));
@@ -160,7 +164,7 @@ describe('ReviewWorkspace — the comment composer', () => {
       renderWorkspace();
       fireEvent.click(screen.getByTitle('Hide review pane'));
       expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
-      selectInArtifact(4, 15);
+      commentOnSelection(4, 15);
       const box = await screen.findByPlaceholderText(/what’s wrong here/i);
       expect(box).toBeTruthy();
       await waitFor(() => expect(document.activeElement).toBe(box));
@@ -175,7 +179,7 @@ describe('ReviewWorkspace — the comment composer', () => {
 
   it('clears the mark when the composer closes', async () => {
     renderWorkspace();
-    selectInArtifact(4, 15);
+    commentOnSelection(4, 15);
     await screen.findByTitle('Selected — write the comment');
     fireEvent.click(screen.getByText('Cancel'));
     await waitFor(() =>
@@ -185,7 +189,7 @@ describe('ReviewWorkspace — the comment composer', () => {
 
   it('saves on Cmd+Enter with the captured range', async () => {
     renderWorkspace();
-    selectInArtifact(4, 15);
+    commentOnSelection(4, 15);
     const box = await screen.findByPlaceholderText(/what’s wrong here/i);
     fireEvent.change(box, { target: { value: 'This claim is not in the dossier.' } });
     fireEvent.keyDown(box, { key: 'Enter', metaKey: true });
@@ -200,7 +204,7 @@ describe('ReviewWorkspace — the comment composer', () => {
 
   it('saves on Ctrl+Enter too', async () => {
     renderWorkspace();
-    selectInArtifact(4, 15);
+    commentOnSelection(4, 15);
     const box = await screen.findByPlaceholderText(/what’s wrong here/i);
     fireEvent.change(box, { target: { value: 'Non-Mac keyboard.' } });
     fireEvent.keyDown(box, { key: 'Enter', ctrlKey: true });
@@ -209,7 +213,7 @@ describe('ReviewWorkspace — the comment composer', () => {
 
   it('closes on Escape without saving', async () => {
     renderWorkspace();
-    selectInArtifact(4, 15);
+    commentOnSelection(4, 15);
     const box = await screen.findByPlaceholderText(/what’s wrong here/i);
     fireEvent.change(box, { target: { value: 'Never sent.' } });
     fireEvent.keyDown(box, { key: 'Escape' });
@@ -221,7 +225,7 @@ describe('ReviewWorkspace — the comment composer', () => {
 
   it('has no Expected input', async () => {
     renderWorkspace();
-    selectInArtifact(4, 15);
+    commentOnSelection(4, 15);
     await screen.findByPlaceholderText(/what’s wrong here/i);
     expect(screen.queryByPlaceholderText(/Expected/i)).toBeNull();
   });
@@ -287,23 +291,23 @@ describe('VOBO-291: Comment | Edit and suggestions', () => {
     ship.mockClear();
   });
 
-  it('defaults to Comment and select opens the comment composer', async () => {
+  it('Correct manually is gone; select does not open a comment', async () => {
     renderWorkspace();
-    expect(screen.getByRole('button', { name: /^Comment$/ })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Correct manually/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Edit$/ })).toBeNull();
     selectInArtifact(4, 15);
-    expect(await screen.findByPlaceholderText(/what’s wrong here/i)).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
+    expect(await screen.findByTitle(/type to suggest/i)).toBeTruthy();
   });
 
-  it('Edit mode select opens a replacement field, not a comment', async () => {
+  it('typing on a selection starts a replacement suggestion', async () => {
     renderWorkspace();
-    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
     selectInArtifact(4, 15);
-    expect(await screen.findByPlaceholderText(/Replacement text/i)).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'o' });
+    const box = await screen.findByPlaceholderText(/Replacement text/i);
+    expect((box as HTMLTextAreaElement).value).toBe('o');
     expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
-    fireEvent.change(screen.getByPlaceholderText(/Replacement text/i), {
-      target: { value: 'opening line' },
-    });
+    fireEvent.change(box, { target: { value: 'opening line' } });
     fireEvent.click(screen.getByRole('button', { name: /^Suggest$/ }));
     await waitFor(() => expect(createSuggestion).toHaveBeenCalled());
     expect(createSuggestion.mock.calls[0][0]).toEqual(
@@ -312,6 +316,21 @@ describe('VOBO-291: Comment | Edit and suggestions', () => {
         startPos: 4,
         endPos: 15,
         replacement: 'opening line',
+      })
+    );
+  });
+
+  it('Backspace on a selection suggests deleting that span', async () => {
+    renderWorkspace();
+    selectInArtifact(4, 15);
+    fireEvent.keyDown(window, { key: 'Backspace' });
+    await waitFor(() => expect(createSuggestion).toHaveBeenCalled());
+    expect(createSuggestion.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        requestId: 'r1',
+        startPos: 4,
+        endPos: 15,
+        replacement: '',
       })
     );
   });
@@ -502,7 +521,7 @@ describe('VOBO-276: round 2+ opens split and accepts a comment on the current pa
     expect(screen.getByText(/first claim/)).toBeTruthy();
   });
 
-  it('selecting on the right pane opens the composer', async () => {
+  it('selecting on the right pane plus ⌘⇧M opens the composer', async () => {
     renderRound2();
     const pane = document.querySelector('[data-side="right"]') as HTMLElement;
     const seg = pane.querySelector('[data-seg-start]') as HTMLElement;
@@ -514,6 +533,7 @@ describe('VOBO-276: round 2+ opens split and accepts a comment on the current pa
     selection.removeAllRanges();
     selection.addRange(range);
     fireEvent.mouseUp(seg);
+    fireEvent.keyDown(window, { key: 'm', code: 'KeyM', metaKey: true, shiftKey: true });
     expect(await screen.findByPlaceholderText(/what’s wrong here/i)).toBeTruthy();
   });
 
