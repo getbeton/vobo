@@ -105,7 +105,7 @@ export function ArtifactPane({
       ref={paneRef}
       onMouseUp={onMouseUp}
       data-side={side}
-      tabIndex={side === 'right' ? 0 : undefined}
+      tabIndex={onMouseUp || side === 'right' ? 0 : undefined}
       style={{
         flex: 1,
         minWidth: 0,
