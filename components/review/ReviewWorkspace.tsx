@@ -545,7 +545,6 @@ export function ReviewWorkspace({
           await advance(res.data?.nextRequestId, res.data?.nextLeaseMine);
         } else {
           setError(res.error);
-          setEditMode(false);
         }
       } finally {
         shippingRef.current = false;
