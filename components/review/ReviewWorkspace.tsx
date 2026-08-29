@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { FileText } from 'lucide-react';
+import { queueListHref, reviewHref, type QueueRef } from '@/lib/shell/crumbs';
 import {
   addCommentAction,
   claimAction,
@@ -72,6 +73,7 @@ interface RequestData {
   title: string;
   queueSlug: string;
   projectSlug: string;
+  environment: 'production' | 'test';
   status: string;
   round: number;
   prompt: string | null;
@@ -79,6 +81,14 @@ interface RequestData {
   policyLabel: string;
   roundBudget: number;
   budgetExhausted: boolean;
+}
+
+function queueRef(request: RequestData): QueueRef {
+  return {
+    projectSlug: request.projectSlug,
+    queueSlug: request.queueSlug,
+    environment: request.environment,
+  };
 }
 
 const sectionHead: React.CSSProperties = {
@@ -479,24 +489,25 @@ export function ReviewWorkspace({
     nextRequestId: string | null | undefined,
     nextLeaseMine?: boolean
   ) => {
+    const list = queueListHref(queueRef(request));
     if (!nextRequestId) {
-      router.push('/queue');
+      router.push(list);
       return;
     }
     if (nextLeaseMine) {
-      router.push(`/review/${nextRequestId}`);
+      router.push(reviewHref(nextRequestId, queueRef(request)));
       return;
     }
     const claimed = await claimAction(nextRequestId);
     if (claimed.ok) {
-      router.push(`/review/${nextRequestId}`);
+      router.push(reviewHref(nextRequestId, queueRef(request)));
       return;
     }
     if (claimed.code === 'claim_race' || claimed.code === 'not_claimable') {
-      router.push('/queue');
+      router.push(list);
       return;
     }
-    router.push('/queue');
+    router.push(list);
   };
 
   const shipVerdict = (kind: 'approve' | 'reject_corrections' | 'reject_rerun', ack = false) => {
@@ -642,7 +653,7 @@ export function ReviewWorkspace({
         }}
       >
         <Link
-          href="/queue"
+          href={queueListHref(queueRef(request))}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -688,7 +699,11 @@ export function ReviewWorkspace({
         )}
         {compareAvailable && (
           <Link
-            href={`/review/${request.id}/compare`}
+            href={reviewHref(request.id, queueRef(request), {
+              compare: true,
+              l: request.round - 1,
+              r: request.round,
+            })}
             style={{ fontSize: 13, color: 'var(--blue-700)', textDecoration: 'none', fontWeight: 500 }}
           >
             Compare v{request.round - 1} ↔ v{request.round}

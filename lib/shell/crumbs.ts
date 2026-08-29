@@ -51,6 +51,65 @@ function href(sel: CrumbSelection): string {
   return `/queue?${q.toString()}`;
 }
 
+/** Project, queue and environment of a request. Enough to build leave-links. */
+export interface QueueRef {
+  projectSlug: string;
+  queueSlug: string;
+  environment: Environment;
+}
+
+/** The list of this request's queue. Never bare `/queue`. */
+export function queueListHref(ref: QueueRef): string {
+  return href({
+    projectSlug: ref.projectSlug,
+    queueSlug: ref.queueSlug,
+    environment: ref.environment,
+  });
+}
+
+export function reviewHref(
+  requestId: string,
+  ref: QueueRef,
+  extra?: { compare?: boolean; l?: number | string; r?: number | string }
+): string {
+  const q = new URLSearchParams();
+  q.set('project', ref.projectSlug);
+  q.set('queue', ref.queueSlug);
+  q.set('env', ref.environment);
+  if (extra?.l != null) q.set('l', String(extra.l));
+  if (extra?.r != null) q.set('r', String(extra.r));
+  const path = extra?.compare ? `/review/${requestId}/compare` : `/review/${requestId}`;
+  return `${path}?${q.toString()}`;
+}
+
+/**
+ * Fill missing project/queue/env from the request. Keep l/r.
+ * `changed` means the review page should redirect to this search string.
+ */
+export function mergeReviewSearch(
+  current: {
+    project?: string | null;
+    queue?: string | null;
+    env?: string | null;
+    l?: string | null;
+    r?: string | null;
+  },
+  ref: QueueRef
+): { search: string; changed: boolean } {
+  const envKnown = current.env === 'test' || current.env === 'production';
+  const project = current.project || ref.projectSlug;
+  const queue = current.queue || ref.queueSlug;
+  const environment: Environment = current.env === 'test' ? 'test' : envKnown ? 'production' : ref.environment;
+  const q = new URLSearchParams();
+  q.set('project', project);
+  q.set('queue', queue);
+  q.set('env', environment);
+  if (current.l) q.set('l', current.l);
+  if (current.r) q.set('r', current.r);
+  const changed = !current.project || !current.queue || !envKnown;
+  return { search: q.toString(), changed };
+}
+
 /**
  * Switching project keeps the queue slug when that slug exists in the new
  * project, and otherwise falls to that project's first queue. Keeping a slug

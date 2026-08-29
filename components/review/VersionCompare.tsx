@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, useTransition } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { queueListHref, reviewHref } from '@/lib/shell/crumbs';
 import {
   confirmResolutionAction,
   markPersistingAction,
@@ -124,6 +125,9 @@ export function VersionCompare({
     roundBudget: number;
     status: string;
     budgetExhausted: boolean;
+    projectSlug: string;
+    queueSlug: string;
+    environment: 'production' | 'test';
   };
   left: VersionInfo;
   right: VersionInfo;
@@ -257,7 +261,14 @@ export function VersionCompare({
         kind,
         acknowledgeInterstitials: ack,
       });
-      if (res.ok) router.push('/queue');
+      if (res.ok)
+        router.push(
+          queueListHref({
+            projectSlug: request.projectSlug,
+            queueSlug: request.queueSlug,
+            environment: request.environment,
+          })
+        );
       else setError(res.error);
     });
   };
@@ -385,7 +396,11 @@ export function VersionCompare({
         }}
       >
         <Link
-          href={`/review/${request.id}`}
+          href={reviewHref(request.id, {
+            projectSlug: request.projectSlug,
+            queueSlug: request.queueSlug,
+            environment: request.environment,
+          })}
           style={{
             display: 'inline-flex',
             alignItems: 'center',
@@ -420,7 +435,15 @@ export function VersionCompare({
         <span style={{ fontSize: 12, color: 'var(--slate-500)' }}>Compare</span>
         <select
           value={left.number}
-          onChange={(e) => router.push(`/review/${request.id}/compare?l=${e.target.value}&r=${right.number}`)}
+          onChange={(e) =>
+            router.push(
+              reviewHref(request.id, {
+                projectSlug: request.projectSlug,
+                queueSlug: request.queueSlug,
+                environment: request.environment,
+              }, { compare: true, l: e.target.value, r: right.number })
+            )
+          }
           className="ds-select-trigger"
           style={{ width: 130, height: 32, fontSize: 12 }}
           title="Left version"
@@ -436,7 +459,19 @@ export function VersionCompare({
         <span style={{ fontSize: 12, color: 'var(--slate-400)' }}>↔</span>
         <select
           value={right.number}
-          onChange={(e) => router.push(`/review/${request.id}/compare?l=${Math.min(left.number, Number(e.target.value) - 1)}&r=${e.target.value}`)}
+          onChange={(e) =>
+            router.push(
+              reviewHref(request.id, {
+                projectSlug: request.projectSlug,
+                queueSlug: request.queueSlug,
+                environment: request.environment,
+              }, {
+                compare: true,
+                l: Math.min(left.number, Number(e.target.value) - 1),
+                r: e.target.value,
+              })
+            )
+          }
           className="ds-select-trigger"
           style={{ width: 130, height: 32, fontSize: 12 }}
           title="Right version"
