@@ -25,6 +25,12 @@ import {
   retire,
 } from '@/lib/core/verdict';
 import { confirmFinding, dismissFinding } from '@/lib/findings/triage';
+import {
+  acceptSuggestion,
+  createSuggestion,
+  rejectSuggestion,
+  saveManualEdits,
+} from '@/lib/core/suggestions';
 
 export type ActionResult<T = unknown> =
   | { ok: true; data?: T }
@@ -178,6 +184,44 @@ export const exportFailingCsvAction = wrap(
     return { csv, filename: 'failing-requests.csv' };
   }
 );
+
+export const createSuggestionAction = wrap(
+  async (input: {
+    requestId: string;
+    startPos: number;
+    endPos: number;
+    replacement: string;
+  }) => {
+    const user = await guardReviewer(input.requestId);
+    const row = await createSuggestion(db, { ...input, userId: user.id });
+    revalidatePath(`/review/${input.requestId}`);
+    return { suggestionId: row.id };
+  }
+);
+
+export const acceptSuggestionAction = wrap(
+  async (requestId: string, suggestionId: string) => {
+    const user = await guardReviewer(requestId);
+    await acceptSuggestion(db, { requestId, suggestionId, userId: user.id });
+    revalidatePath(`/review/${requestId}`);
+  }
+);
+
+export const rejectSuggestionAction = wrap(
+  async (requestId: string, suggestionId: string) => {
+    const user = await guardReviewer(requestId);
+    await rejectSuggestion(db, { requestId, suggestionId, userId: user.id });
+    revalidatePath(`/review/${requestId}`);
+  }
+);
+
+export const saveManualEditsAction = wrap(async (requestId: string) => {
+  const user = await guardReviewer(requestId);
+  const res = await saveManualEdits(db, { requestId, userId: user.id });
+  revalidatePath('/queue');
+  revalidatePath(`/review/${requestId}`);
+  return res;
+});
 
 export const gateAction = wrap(async (requestId: string) => {
   const user = await guardReviewer(requestId);

@@ -8,6 +8,7 @@ import {
 import { appendEvent, Db } from './eventlog';
 import { ApiProblem } from './requests';
 import { markCorrectionResolved } from './verdict';
+import { workingContentMd } from './suggestions';
 
 const CONTEXT = 32;
 
@@ -35,7 +36,7 @@ export async function addComment(db: Db, input: AddCommentInput) {
       ),
     });
     if (!version) throw new ApiProblem(500, 'version_missing', 'Current version missing');
-    const content = version.contentMd;
+    const content = await workingContentMd(tx, request.id, version);
     if (
       input.startPos < 0 ||
       input.endPos > content.length ||

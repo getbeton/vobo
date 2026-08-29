@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import {
   ReviewWorkspace,
   AnnotationData,
@@ -32,6 +32,10 @@ const ship = vi.fn(async (_payload: unknown) => ({
   data: { nextRequestId: null as string | null, nextLeaseMine: false },
 }));
 const claim = vi.fn(async () => ({ ok: true as const }));
+const createSuggestion = vi.fn(async () => ({ ok: true as const, data: { suggestionId: 's1' } }));
+const acceptSuggestion = vi.fn(async () => ({ ok: true as const }));
+const rejectSuggestion = vi.fn(async () => ({ ok: true as const }));
+const saveEdits = vi.fn(async () => ({ ok: true as const, data: { round: 2 } }));
 const routerPush = vi.fn();
 const routerRefresh = vi.fn();
 
@@ -48,6 +52,10 @@ vi.mock('@/lib/actions/review', () => ({
   dismissFindingAction: async () => ({ ok: true }),
   shipAction: (payload: unknown) => ship(payload),
   claimAction: (...args: unknown[]) => claim(...args),
+  createSuggestionAction: (...args: unknown[]) => createSuggestion(...args),
+  acceptSuggestionAction: (...args: unknown[]) => acceptSuggestion(...args),
+  rejectSuggestionAction: (...args: unknown[]) => rejectSuggestion(...args),
+  saveManualEditsAction: (...args: unknown[]) => saveEdits(...args),
   gateAction: async () => ({ ok: true, data: { blocked: false, reasons: [], interstitials: [] } }),
 }));
 
@@ -268,49 +276,128 @@ describe('ReviewWorkspace — editing a comment', () => {
   });
 });
 
-function typeInEditor(text: string) {
-  const box = document.querySelector('[contenteditable]') as HTMLElement;
-  expect(box, 'edit mode renders a contenteditable').toBeTruthy();
-  box.innerText = text;
-}
-
-describe('VOBO-282: human save in edit mode', () => {
-  beforeEach(() => ship.mockClear());
-
-  it('ships approve_edited with the artifact text even on the last policy round', async () => {
-    render(
-      <ReviewWorkspace
-        request={{ ...REQUEST, round: 3, roundBudget: 3 }}
-        contentMd={CONTENT}
-        versionId="v3"
-        annotations={[]}
-        criteria={[{ id: 'c1', title: 'Voice', description: null, verdict: null }]}
-        files={[]}
-      />
-    );
-    fireEvent.click(screen.getByRole('button', { name: /Correct manually/i }));
-    typeInEditor(CONTENT);
-    fireEvent.click(screen.getByRole('button', { name: /Save as human version/i }));
-    await waitFor(() => expect(ship).toHaveBeenCalled());
-    expect(ship.mock.calls[0][0]).toMatchObject({
-      requestId: 'r1',
-      kind: 'approve_edited',
-      editedContentMd: CONTENT,
-    });
+describe('VOBO-291: Comment | Edit and suggestions', () => {
+  beforeEach(() => {
+    createSuggestion.mockClear();
+    acceptSuggestion.mockClear();
+    saveEdits.mockClear();
+    ship.mockClear();
   });
 
-  it('keeps edit mode and shows the API reason when save fails', async () => {
-    ship.mockResolvedValueOnce({
-      ok: false as const,
-      error: 'Score all criteria to proceed — 1 left',
-      code: 'criteria_unscored',
-    });
+  it('defaults to Comment and select opens the comment composer', async () => {
     renderWorkspace();
-    fireEvent.click(screen.getByRole('button', { name: /Correct manually/i }));
-    typeInEditor(CONTENT);
-    fireEvent.click(screen.getByRole('button', { name: /Save as human version/i }));
-    await waitFor(() => expect(screen.getByText(/Score all criteria to proceed — 1 left/)).toBeTruthy());
-    expect(screen.getByRole('button', { name: /Save as human version/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Comment$/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Correct manually/i })).toBeNull();
+    selectInArtifact(4, 15);
+    expect(await screen.findByPlaceholderText(/what’s wrong here/i)).toBeTruthy();
+  });
+
+  it('Edit mode select opens a replacement field, not a comment', async () => {
+    renderWorkspace();
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
+    selectInArtifact(4, 15);
+    expect(await screen.findByPlaceholderText(/Replacement text/i)).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText(/Replacement text/i), {
+      target: { value: 'opening line' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^Suggest$/ }));
+    await waitFor(() => expect(createSuggestion).toHaveBeenCalled());
+    expect(createSuggestion.mock.calls[0][0]).toEqual(
+      expect.objectContaining({
+        requestId: 'r1',
+        startPos: 4,
+        endPos: 15,
+        replacement: 'opening line',
+      })
+    );
+  });
+
+  it('Accept on a pending suggestion does not write a version', async () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        suggestions={[
+          {
+            id: 's1',
+            startPos: 4,
+            endPos: 15,
+            originalQuote: 'first claim',
+            replacement: 'opening line',
+            status: 'pending',
+          },
+        ]}
+      />
+    );
+    fireEvent.click(within(screen.getByTestId('suggestion-s1')).getByRole('button', { name: /^Accept$/ }));
+    await waitFor(() => expect(acceptSuggestion).toHaveBeenCalledWith('r1', 's1'));
+    expect(ship).not.toHaveBeenCalled();
+    expect(saveEdits).not.toHaveBeenCalled();
+  });
+
+  it('applied suggestions arm Save manual edits; pending blocks it', () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        suggestions={[
+          {
+            id: 's1',
+            startPos: 4,
+            endPos: 15,
+            originalQuote: 'first claim',
+            replacement: 'opening line',
+            status: 'applied',
+          },
+          {
+            id: 's2',
+            startPos: 20,
+            endPos: 26,
+            originalQuote: 'second',
+            replacement: 'next',
+            status: 'pending',
+          },
+        ]}
+      />
+    );
+    const btn = screen.getByTestId('verdict-button') as HTMLButtonElement;
+    expect(btn.textContent).toMatch(/Save manual edits/);
+    expect(btn.disabled).toBe(true);
+  });
+
+  it('Save manual edits persists without shipping accept or reject', async () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        suggestions={[
+          {
+            id: 's1',
+            startPos: 4,
+            endPos: 15,
+            originalQuote: 'first claim',
+            replacement: 'opening line',
+            status: 'applied',
+          },
+        ]}
+      />
+    );
+    fireEvent.click(screen.getByTestId('verdict-button'));
+    await waitFor(() => expect(saveEdits).toHaveBeenCalledWith('r1'));
+    expect(ship).not.toHaveBeenCalled();
   });
 });
 
