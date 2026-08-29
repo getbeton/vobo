@@ -23,6 +23,10 @@ const addComment = vi.fn(async (_payload: unknown) => ({
 const editComment = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
 const resolveComment = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
 const setCriterion = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
+const confirmRes = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
+const persist = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
+const repin = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
+const retire = vi.fn(async (..._args: unknown[]) => ({ ok: true as const }));
 const ship = vi.fn(async (_payload: unknown) => ({
   ok: true as const,
   data: { nextRequestId: null as string | null, nextLeaseMine: false },
@@ -36,6 +40,10 @@ vi.mock('@/lib/actions/review', () => ({
   editCommentAction: (...args: unknown[]) => editComment(...args),
   resolveCommentAction: (...args: unknown[]) => resolveComment(...args),
   setCriterionAction: (...args: unknown[]) => setCriterion(...args),
+  confirmResolutionAction: (...args: unknown[]) => confirmRes(...args),
+  markPersistingAction: (...args: unknown[]) => persist(...args),
+  repinAction: (...args: unknown[]) => repin(...args),
+  retireAction: (...args: unknown[]) => retire(...args),
   confirmFindingAction: async () => ({ ok: true }),
   dismissFindingAction: async () => ({ ok: true }),
   shipAction: (payload: unknown) => ship(payload),
@@ -359,6 +367,148 @@ describe('VOBO-269: review navigation keeps the working queue', () => {
     await waitFor(() => expect(routerPush).toHaveBeenCalled());
     expect(routerPush).toHaveBeenCalledWith(QUEUE_HREF);
     expect(routerPush.mock.calls.flat()).not.toContain('/queue');
+  });
+});
+
+const PREV = 'We sincerely apologize for the interruption.';
+
+describe('VOBO-276: round 2+ opens split and accepts a comment on the current pane', () => {
+  beforeEach(() => {
+    addComment.mockClear();
+    setCriterion.mockClear();
+  });
+
+  function renderRound2() {
+    return render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, round: 2 }}
+        contentMd={CONTENT}
+        previousContentMd={PREV}
+        versionId="v2"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+      />
+    );
+  }
+
+  it('round ≥ 2 shows previous left and current right', () => {
+    renderRound2();
+    expect(document.querySelector('[data-side="left"]')).toBeTruthy();
+    expect(document.querySelector('[data-side="right"]')).toBeTruthy();
+    expect(document.querySelector('[data-side="right"]')?.textContent).toContain('first claim');
+  });
+
+  it('round 1 stays a single pane', () => {
+    renderWorkspace();
+    expect(document.querySelector('[data-side="left"]')).toBeNull();
+    expect(document.querySelector('[data-side="right"]')).toBeNull();
+  });
+
+  it('Current only restores the single pane of the current version', () => {
+    renderRound2();
+    fireEvent.click(screen.getByRole('button', { name: /Current only/i }));
+    expect(document.querySelector('[data-side="left"]')).toBeNull();
+    expect(screen.getByText(/first claim/)).toBeTruthy();
+  });
+
+  it('selecting on the right pane opens the composer', async () => {
+    renderRound2();
+    const pane = document.querySelector('[data-side="right"]') as HTMLElement;
+    const seg = pane.querySelector('[data-seg-start]') as HTMLElement;
+    const textNode = seg.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(textNode, 4);
+    range.setEnd(textNode, 15);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    fireEvent.mouseUp(seg);
+    expect(await screen.findByPlaceholderText(/what’s wrong here/i)).toBeTruthy();
+  });
+
+  it('selecting on the left pane does not open the composer', () => {
+    renderRound2();
+    const pane = document.querySelector('[data-side="left"]') as HTMLElement;
+    const seg = pane.querySelector('[data-seg-start]') as HTMLElement;
+    const textNode = seg.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 2);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    fireEvent.mouseUp(seg);
+    expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull();
+  });
+
+  it('criteria stay on the split and can be scored', async () => {
+    render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, round: 2 }}
+        contentMd={CONTENT}
+        previousContentMd={PREV}
+        versionId="v2"
+        annotations={[]}
+        criteria={[
+          { id: 'c1', title: 'Voice', description: null, verdict: null },
+        ]}
+        files={[]}
+      />
+    );
+    expect(document.querySelector('[data-side="right"]')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Pass' }));
+    await waitFor(() => expect(setCriterion).toHaveBeenCalledWith('r1', 'c1', 'pass'));
+    expect(document.querySelector('[data-side="left"]')).toBeTruthy();
+  });
+});
+
+const PRIOR: AnnotationData = {
+  id: 'p1',
+  body: 'Drop the apology.',
+  expected: null,
+  quote: 'sincerely',
+  startPos: 3,
+  endPos: 12,
+  bornRound: 1,
+  resolved: false,
+  state: 'orphaned',
+  confirmation: null,
+};
+
+describe('VOBO-278: prior findings live on the workspace rail', () => {
+  beforeEach(() => {
+    confirmRes.mockClear();
+    addComment.mockClear();
+  });
+
+  function renderSplitWithPrior() {
+    return render(
+      <ReviewWorkspace
+        request={{ ...REQUEST, round: 2 }}
+        contentMd={CONTENT}
+        previousContentMd={PREV}
+        versionId="v2"
+        annotations={[PRIOR]}
+        criteria={CRITERIA}
+        files={[]}
+      />
+    );
+  }
+
+  it('shows Resolved / Persists / Re-pin / Retire on a prior finding', () => {
+    renderSplitWithPrior();
+    expect(screen.getByRole('button', { name: /Resolved/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Persists/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Re-pin/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Retire/i })).toBeTruthy();
+  });
+
+  it('Resolved confirms against the current version without leaving split', async () => {
+    renderSplitWithPrior();
+    fireEvent.click(screen.getByRole('button', { name: /Resolved/i }));
+    await waitFor(() => expect(confirmRes).toHaveBeenCalledWith('r1', 'p1', 'v2'));
+    expect(document.querySelector('[data-side="right"]')).toBeTruthy();
   });
 });
 
