@@ -20,6 +20,11 @@ import { autoevalsScorer } from './autoevals';
 const BACKOFF_SECONDS = [10, 60, 180];
 export const MAX_JUDGE_ATTEMPTS = BACKOFF_SECONDS.length;
 
+/** First ingest stays `judge:${runId}` so existing batches still replay. */
+export function judgeIdempotencyKey(runId: string, rerunSeq: number) {
+  return rerunSeq > 0 ? `judge:${runId}:${rerunSeq}` : `judge:${runId}`;
+}
+
 export interface JudgeDeps {
   scorer?: JudgeScorer;
   now?: () => Date;
@@ -168,7 +173,7 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
         requestId: request.id,
         versionId: version.id,
         producerId: judgeProducer.id,
-        idempotencyKey: `judge:${run.id}`,
+        idempotencyKey: judgeIdempotencyKey(run.id, run.rerunSeq),
         findings,
         judgeRunId: run.id,
       });
