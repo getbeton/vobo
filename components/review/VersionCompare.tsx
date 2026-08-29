@@ -12,6 +12,10 @@ import {
   shipAction,
   gateAction,
 } from '@/lib/actions/review';
+import { ArtifactPane, MarkedText, useSyncScroll } from './ArtifactPane';
+import { FindingData, PriorFindingsList } from './PriorFindingsRail';
+
+export type { FindingData };
 
 /**
  * Version Compare — the moat screen, verbatim from the prototype:
@@ -29,84 +33,6 @@ interface VersionInfo {
   author: string;
   hash: string;
   id?: string;
-}
-
-export interface FindingData {
-  id: string;
-  body: string;
-  expected: string | null;
-  quote: string;
-  startPos: number;
-  endPos: number;
-  bornRound: number;
-  resolvedComment: boolean;
-  state: string | null;
-  confidence: string | null;
-  confirmation: string | null;
-  landing: { start: number; end: number; quote: string } | null;
-}
-
-const stateColors: Record<string, { bg: string; fg: string; border: string }> = {
-  persisting: { bg: 'var(--red-100)', fg: 'var(--red-900)', border: 'var(--red-500)' },
-  resolved: { bg: 'var(--green-100)', fg: 'var(--green-900)', border: 'var(--green-500)' },
-  orphaned: { bg: 'var(--amber-100)', fg: 'var(--amber-900)', border: 'var(--amber-500)' },
-  repinned: { bg: 'var(--blue-100)', fg: 'var(--blue-900)', border: 'var(--blue-500)' },
-  new: { bg: 'var(--blue-100)', fg: 'var(--blue-900)', border: 'var(--blue-500)' },
-};
-
-function renderPane(
-  content: string,
-  marks: Array<{ start: number; end: number; state: string; low: boolean; focused: boolean }>,
-  refCb?: (el: HTMLDivElement | null) => void,
-  onMouseUp?: () => void,
-  dataSide?: string
-) {
-  const sorted = [...marks].sort((a, b) => a.start - b.start);
-  const segs: Array<{ text: string; start: number; mark: (typeof marks)[number] | null }> = [];
-  let pos = 0;
-  for (const m of sorted) {
-    if (m.start < pos || m.start >= content.length) continue;
-    if (m.start > pos) segs.push({ text: content.slice(pos, m.start), start: pos, mark: null });
-    const end = Math.min(m.end, content.length);
-    segs.push({ text: content.slice(m.start, end), start: m.start, mark: m });
-    pos = end;
-  }
-  if (pos < content.length) segs.push({ text: content.slice(pos), start: pos, mark: null });
-
-  return (
-    <div
-      ref={refCb}
-      onMouseUp={onMouseUp}
-      data-side={dataSide}
-      tabIndex={dataSide === 'right' ? 0 : undefined}
-      style={{ flex: 1, minWidth: 0, overflow: 'auto', padding: '24px 28px 80px' }}
-    >
-      <div style={{ fontSize: 14.5, lineHeight: 1.8, color: 'var(--slate-800)', whiteSpace: 'pre-wrap', maxWidth: 700 }}>
-        {segs.map((s) => {
-          if (!s.mark)
-            return (
-              <span key={s.start} data-seg-start={s.start}>
-                {s.text}
-              </span>
-            );
-          const c = stateColors[s.mark.state] ?? stateColors.new;
-          return (
-            <span
-              key={s.start}
-              data-seg-start={s.start}
-              style={{
-                background: c.bg,
-                borderBottom: `2px ${s.mark.low ? 'dashed' : 'solid'} ${c.border}`,
-                outline: s.mark.focused ? `2px solid ${c.border}` : undefined,
-              }}
-            >
-              {s.text}
-            </span>
-          );
-        })}
-      </div>
-    </div>
-  );
 }
 
 export function VersionCompare({
@@ -147,7 +73,6 @@ export function VersionCompare({
   const leftRef = useRef<HTMLDivElement | null>(null);
   const rightRef = useRef<HTMLDivElement | null>(null);
   const reasonRef = useRef<HTMLInputElement | null>(null);
-  const syncing = useRef(false);
 
   const prior = findings.filter((f) => f.bornRound < request.round);
   const ordered = useMemo(() => {
@@ -157,28 +82,7 @@ export function VersionCompare({
   }, [prior]);
 
   const budgetReached = request.round >= request.roundBudget;
-
-  // Synchronized scroll (ratio-based).
-  useEffect(() => {
-    const l = leftRef.current;
-    const r = rightRef.current;
-    if (!l || !r) return;
-    const sync = (src: HTMLDivElement, dst: HTMLDivElement) => () => {
-      if (syncing.current) return;
-      syncing.current = true;
-      const ratio = src.scrollTop / Math.max(1, src.scrollHeight - src.clientHeight);
-      dst.scrollTop = ratio * (dst.scrollHeight - dst.clientHeight);
-      requestAnimationFrame(() => (syncing.current = false));
-    };
-    const onL = sync(l, r);
-    const onR = sync(r, l);
-    l.addEventListener('scroll', onL);
-    r.addEventListener('scroll', onR);
-    return () => {
-      l.removeEventListener('scroll', onL);
-      r.removeEventListener('scroll', onR);
-    };
-  }, []);
+  useSyncScroll(leftRef, rightRef, true);
 
   const act = (fn: () => Promise<unknown>) => {
     setError(null);
@@ -354,32 +258,6 @@ export function VersionCompare({
 
   const orphans = prior.filter((f) => f.state === 'orphaned');
 
-  const stateChip = (f: FindingData) => {
-    const displayState =
-      f.confirmation === 'res' || f.resolvedComment
-        ? 'resolved'
-        : f.confirmation === 'per'
-          ? 'persisting'
-          : f.state ?? 'new';
-    const c = stateColors[displayState] ?? stateColors.new;
-    return (
-      <span
-        style={{
-          fontSize: 11,
-          fontWeight: 600,
-          borderRadius: 9999,
-          padding: '1px 9px',
-          background: c.bg,
-          color: c.fg,
-        }}
-      >
-        {displayState}
-        {f.confidence && f.confirmation === null && f.state !== 'new' ? ` · ${f.confidence}` : ''}
-        {f.confirmation === 'per' ? ' · re-asserted' : ''}
-      </span>
-    );
-  };
-
   return (
     <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', height: '100%' }}>
       {/* Header */}
@@ -551,7 +429,14 @@ export function VersionCompare({
             >
               v{left.number} · {left.author} · <span style={{ fontFamily: 'var(--font-mono)' }}>{left.hash.slice(0, 8)}</span>
             </div>
-            {renderPane(left.content, leftMarks, (el) => (leftRef.current = el))}
+            <ArtifactPane
+              paneRef={(el) => {
+                leftRef.current = el;
+              }}
+              style={{ padding: '24px 28px 80px' }}
+            >
+              <MarkedText content={left.content} marks={leftMarks} />
+            </ArtifactPane>
           </div>
           <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
             <div
@@ -586,13 +471,16 @@ export function VersionCompare({
                 </span>
               )}
             </div>
-            {renderPane(
-              right.content,
-              [...rightMarks, ...newMarks],
-              (el) => (rightRef.current = el),
-              captureRepin,
-              'right'
-            )}
+            <ArtifactPane
+              side="right"
+              paneRef={(el) => {
+                rightRef.current = el;
+              }}
+              onMouseUp={captureRepin}
+              style={{ padding: '24px 28px 80px' }}
+            >
+              <MarkedText content={right.content} marks={[...rightMarks, ...newMarks]} />
+            </ArtifactPane>
           </div>
         </div>
 
@@ -611,127 +499,25 @@ export function VersionCompare({
             Prior findings — verify against intent
           </div>
           <div style={{ flex: 1, overflow: 'auto', padding: '4px 16px 20px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {ordered.length === 0 && (
-              <span style={{ fontSize: 12, color: 'var(--slate-400)' }}>
-                No prior findings on this pair.
-              </span>
-            )}
-            {ordered.map((f) => (
-              <div
-                key={f.id}
-                onClick={() => setFocusId(f.id)}
-                style={{
-                  border: f.id === focusId ? '1px solid var(--blue-400)' : '1px solid var(--border)',
-                  borderRadius: 8,
-                  padding: 10,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 6,
-                  cursor: 'pointer',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {stateChip(f)}
-                  <span style={{ fontSize: 11, color: 'var(--slate-500)', flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                    “{f.quote.slice(0, 36)}”
-                  </span>
-                </div>
-                <span style={{ fontSize: 13, fontWeight: 500, lineHeight: 1.4 }}>{f.body}</span>
-                {f.expected && (
-                  <span style={{ fontSize: 12, color: 'var(--slate-500)', lineHeight: 1.5 }}>
-                    Expected: {f.expected}
-                  </span>
-                )}
-                {retireFor === f.id ? (
-                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                    <input
-                      ref={reasonRef}
-                      autoFocus
-                      value={retireReason}
-                      onChange={(e) => setRetireReason(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Escape') {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setRetireFor(null);
-                          setRetireReason('');
-                          return;
-                        }
-                        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          commitRetire();
-                        }
-                      }}
-                      placeholder="Retire reason — required"
-                      style={{
-                        flex: 1,
-                        border: '1px solid var(--input)',
-                        borderRadius: 6,
-                        padding: '6px 9px',
-                        fontSize: 12.5,
-                        outline: 'none',
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="ds-btn ds-btn--outline ds-btn--sm"
-                      disabled={retireReason.trim().length < 2}
-                      onClick={commitRetire}
-                    >
-                      Retire
-                    </button>
-                  </div>
-                ) : f.confirmation === 'res' || f.resolvedComment ? (
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    <button
-                      type="button"
-                      className="ds-btn ds-btn--ghost ds-btn--sm"
-                      style={{ height: 28, fontSize: 12 }}
-                      onClick={() => openFollowUp('retire', f.id)}
-                      title="Drop from history — not required for Approve"
-                    >
-                      Retire <kbd style={{ fontSize: 10 }}>X</kbd>
-                    </button>
-                  </div>
-                ) : (
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-                    <button
-                      type="button"
-                      className="ds-btn ds-btn--outline ds-btn--sm"
-                      style={{ height: 28, fontSize: 12 }}
-                      onClick={() => act(() => confirmResolutionAction(request.id, f.id, right.id!))}
-                    >
-                      Resolved <kbd style={{ fontSize: 10 }}>C</kbd>
-                    </button>
-                    <button
-                      type="button"
-                      className="ds-btn ds-btn--outline ds-btn--sm"
-                      style={{ height: 28, fontSize: 12 }}
-                      onClick={() => act(() => markPersistingAction(request.id, f.id, right.id!))}
-                    >
-                      Persists <kbd style={{ fontSize: 10 }}>P</kbd>
-                    </button>
-                    <button
-                      type="button"
-                      className="ds-btn ds-btn--outline ds-btn--sm"
-                      style={{ height: 28, fontSize: 12 }}
-                      onClick={() => openFollowUp('repin', f.id)}
-                    >
-                      Re-pin <kbd style={{ fontSize: 10 }}>O</kbd>
-                    </button>
-                    <button
-                      type="button"
-                      className="ds-btn ds-btn--ghost ds-btn--sm"
-                      style={{ height: 28, fontSize: 12 }}
-                      onClick={() => openFollowUp('retire', f.id)}
-                    >
-                      Retire <kbd style={{ fontSize: 10 }}>X</kbd>
-                    </button>
-                  </div>
-                )}
-              </div>
-            ))}
+            <PriorFindingsList
+              items={ordered}
+              focusId={focusId}
+              onFocus={setFocusId}
+              retireFor={retireFor}
+              retireReason={retireReason}
+              onRetireReasonChange={setRetireReason}
+              reasonRef={reasonRef}
+              onResolved={(id) => act(() => confirmResolutionAction(request.id, id, right.id!))}
+              onPersists={(id) => act(() => markPersistingAction(request.id, id, right.id!))}
+              onOpenRepin={(id) => openFollowUp('repin', id)}
+              onOpenRetire={(id) => openFollowUp('retire', id)}
+              onCommitRetire={commitRetire}
+              onCancelFollowUp={() => {
+                setRetireFor(null);
+                setRetireReason('');
+              }}
+              emptyLabel="No prior findings on this pair."
+            />
           </div>
         </div>
       </div>
@@ -769,7 +555,7 @@ export function VersionCompare({
             </div>
             {!criteriaScored && (
               <div style={{ border: '1px solid var(--amber-500)', background: 'var(--amber-50)', color: 'var(--amber-900)', borderRadius: 8, padding: '8px 12px', fontSize: 12.5 }}>
-                Score all criteria to proceed — {unscoredCount} left (in the workspace rail).
+                Score all criteria to proceed — {unscoredCount} left.
               </div>
             )}
             {gateInfo.reasons.length > 0 && (
