@@ -221,8 +221,8 @@ export const shipAction = wrap(
 
 export const confirmResolutionAction = wrap(
   async (requestId: string, annotationId: string, versionId: string) => {
-    await guardReviewer(requestId);
-    await confirmResolution(db, requestId, annotationId, versionId);
+    const user = await guardReviewer(requestId);
+    await confirmResolution(db, requestId, annotationId, versionId, user.id);
     revalidatePath(`/review/${requestId}`);
   }
 );

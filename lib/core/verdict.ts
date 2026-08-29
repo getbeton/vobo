@@ -110,23 +110,34 @@ export async function approveGate(
   if (request.round > 1) {
     const prior = rows.filter((r) => r.ann.bornRound < request.round && r.state);
     const persisting = prior.filter(
-      (r) => r.state!.state === 'persisting' && r.state!.confirmation !== 'res'
+      (r) =>
+        r.state!.state === 'persisting' &&
+        r.state!.confirmation !== 'res' &&
+        !isHumanResolved(r.ann, r.state)
     );
     if (persisting.length > 0) {
       reasons.push(`${persisting.length} correction(s) persisting — the model ignored them`);
     }
-    const orphaned = prior.filter((r) => r.state!.state === 'orphaned');
+    const orphaned = prior.filter(
+      (r) => r.state!.state === 'orphaned' && !isHumanResolved(r.ann, r.state)
+    );
     if (orphaned.length > 0) {
-      reasons.push(`${orphaned.length} orphaned anchor(s) — re-pin or retire`);
+      reasons.push(`${orphaned.length} orphaned anchor(s) — resolve (C), re-pin or retire`);
     }
     const repinnedUnjudged = prior.filter(
-      (r) => r.state!.state === 'repinned' && !r.state!.confirmation
+      (r) =>
+        r.state!.state === 'repinned' &&
+        !r.state!.confirmation &&
+        !isHumanResolved(r.ann, r.state)
     );
     if (repinnedUnjudged.length > 0) {
       reasons.push(`${repinnedUnjudged.length} re-pinned anchor(s) unjudged — resolved or persists`);
     }
     const unconfirmedResolved = prior.filter(
-      (r) => r.state!.state === 'resolved' && !r.state!.confirmation
+      (r) =>
+        r.state!.state === 'resolved' &&
+        !r.state!.confirmation &&
+        !isHumanResolved(r.ann, r.state)
     );
     if (unconfirmedResolved.length > 0) {
       interstitials.push(
@@ -378,11 +389,51 @@ export async function ship(db: Db, input: ShipInput) {
 // Compare-rail actions: confirm / persist / re-pin / retire (VOBO-22 backend)
 // ---------------------------------------------------------------------------
 
-export async function confirmResolution(db: Db, requestId: string, annotationId: string, versionId: string) {
-  await db
+/** Human Resolve / C wins over the stored classifier enum. History stays. */
+export function isHumanResolved(
+  ann: { resolvedAt: Date | null },
+  state: { confirmation: 'res' | 'per' | null } | null | undefined
+): boolean {
+  return Boolean(ann.resolvedAt) || state?.confirmation === 'res';
+}
+
+/**
+ * One write for both surfaces: comment-rail Resolve and compare C.
+ * Classifier `state` is left as stored history.
+ */
+export async function markCorrectionResolved(
+  tx: DbOrTx,
+  input: { requestId: string; annotationId: string; versionId: string; userId?: string }
+) {
+  const ann = await tx.query.annotations.findFirst({
+    where: and(eq(annotations.id, input.annotationId), eq(annotations.requestId, input.requestId)),
+  });
+  if (!ann) throw new ApiProblem(404, 'annotation_not_found', 'Annotation not found');
+
+  await tx
+    .update(annotations)
+    .set({
+      resolvedAt: ann.resolvedAt ?? new Date(),
+      resolvedBy: ann.resolvedBy ?? input.userId ?? null,
+    })
+    .where(eq(annotations.id, ann.id));
+
+  await tx
     .update(anchorStates)
     .set({ confirmation: 'res', updatedAt: new Date() })
-    .where(and(eq(anchorStates.annotationId, annotationId), eq(anchorStates.versionId, versionId)));
+    .where(and(eq(anchorStates.annotationId, ann.id), eq(anchorStates.versionId, input.versionId)));
+}
+
+export async function confirmResolution(
+  db: Db,
+  requestId: string,
+  annotationId: string,
+  versionId: string,
+  userId?: string
+) {
+  await db.transaction(async (tx) => {
+    await markCorrectionResolved(tx, { requestId, annotationId, versionId, userId });
+  });
 }
 
 export async function markPersisting(db: Db, requestId: string, annotationId: string, versionId: string) {

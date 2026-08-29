@@ -366,6 +366,17 @@ async function round2Persisting() {
   return { request, v2, annotationId: ann.id };
 }
 
+async function expectResolvedOneTruth(annotationId: string, versionId: string) {
+  const ann = await db.query.annotations.findFirst({
+    where: (t, { eq }) => eq(t.id, annotationId),
+  });
+  expect(ann?.resolvedAt).toBeInstanceOf(Date);
+  const st = await db.query.anchorStates.findFirst({
+    where: (t, { and, eq }) => and(eq(t.annotationId, annotationId), eq(t.versionId, versionId)),
+  });
+  expect(st?.confirmation).toBe('res');
+}
+
 /**
  * VOBO-273. Jana: Resolve and C on a prior comment must unblock approve
  * without Retire. These must fail on current staging (orphaned rows ignore
@@ -375,6 +386,7 @@ describe('VOBO-273: resolve/C on prior comments unblocks approve', () => {
   it('orphan + C: approveGate opens and ship(approve) succeeds without retire', async () => {
     const { request, v2, annotationId } = await round2Orphan();
     await confirmResolution(db, request.id, annotationId, v2.version.id);
+    await expectResolvedOneTruth(annotationId, v2.version.id);
 
     const gate = await approveGate(db, request.id, fx.userId);
     expect(gate.blocked).toBe(false);
@@ -390,8 +402,9 @@ describe('VOBO-273: resolve/C on prior comments unblocks approve', () => {
   });
 
   it('orphan + comment Resolve: same as C (the Jana failure)', async () => {
-    const { request, annotationId } = await round2Orphan();
+    const { request, v2, annotationId } = await round2Orphan();
     await resolveComment(db, request.id, annotationId, fx.userId);
+    await expectResolvedOneTruth(annotationId, v2.version.id);
 
     const gate = await approveGate(db, request.id, fx.userId);
     expect(gate.blocked).toBe(false);
