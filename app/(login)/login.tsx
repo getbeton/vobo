@@ -11,6 +11,7 @@ import { ActionState } from '@/lib/auth/middleware';
 import { GoogleButton } from '@/components/auth/GoogleButton';
 import { MagicLinkForm } from '@/components/auth/MagicLinkForm';
 import { Logo } from '@/components/shell/Logo';
+import { safeInternalPath } from '@/lib/auth/paths';
 
 const POST_AUTH = '/welcome';
 
@@ -41,8 +42,7 @@ export function Login({
   googleEnabled?: boolean;
 }) {
   const searchParams = useSearchParams();
-  const redirect = searchParams.get('redirect');
-  const priceId = searchParams.get('priceId');
+  const redirect = safeInternalPath(searchParams.get('redirect'));
   const inviteId = searchParams.get('inviteId');
   const [mode, setMode] = useState<'signin' | 'signup'>(initialMode);
   const [showPassword, setShowPassword] = useState(false);
@@ -105,7 +105,6 @@ export function Login({
             style={{ display: showPassword ? undefined : 'none' }}
           >
             <input type="hidden" name="redirect" value={redirect || ''} />
-            <input type="hidden" name="priceId" value={priceId || ''} />
             <input type="hidden" name="inviteId" value={inviteId || ''} />
             <div>
               <Label htmlFor="email" className="block text-sm font-medium text-gray-700">

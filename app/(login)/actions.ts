@@ -155,6 +155,7 @@ export async function signOut() {
     await logActivity(withWs?.workspaceId, user.id, ActivityType.SIGN_OUT);
   }
   await auth.api.signOut({ headers: await headers() });
+  redirect('/auth');
 }
 
 const updatePasswordSchema = z.object({

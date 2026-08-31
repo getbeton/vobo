@@ -1,36 +1,34 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
-import { usePathname, useSearchParams } from 'next/navigation';
+import { useEffect, useState } from 'react';
+import { usePathname } from 'next/navigation';
 import { capturePageview, initBrowserPostHog } from '@/lib/analytics/browser';
 import { IdentifyUser } from './IdentifyUser';
 
 /**
  * Boots PostHog once from NEXT_PUBLIC_POSTHOG_KEY. No-ops without a key.
- * Pageviews fire on App Router navigations (init turns the automatic one off
- * so the first view is not counted twice).
+ * Do not wrap page children in this component — keep the tracker in its own
+ * Suspense boundary so search-params do not blank the shell.
  */
-export function AnalyticsProvider({ children }: { children: ReactNode }) {
+export function AnalyticsTracker() {
   const [booted, setBooted] = useState(false);
   const pathname = usePathname();
-  const searchParams = useSearchParams();
 
   useEffect(() => {
     const key = process.env.NEXT_PUBLIC_POSTHOG_KEY ?? '';
     if (!key) return;
-    initBrowserPostHog(key);
-    setBooted(true);
+    try {
+      initBrowserPostHog(key);
+      setBooted(true);
+    } catch (err) {
+      console.warn('posthog init failed (non-fatal):', err);
+    }
   }, []);
 
   useEffect(() => {
     if (!booted) return;
     capturePageview();
-  }, [booted, pathname, searchParams]);
+  }, [booted, pathname]);
 
-  return (
-    <>
-      {booted ? <IdentifyUser /> : null}
-      {children}
-    </>
-  );
+  return booted ? <IdentifyUser /> : null;
 }

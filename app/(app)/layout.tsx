@@ -61,6 +61,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const shellData: ShellData = {
     workspace: { name: workspace?.name ?? 'Workspace', href: '/admin' },
+    user: { name: user.name ?? '', email: user.email },
     projects: projectRows.map((p) => ({
       slug: p.slug,
       name: p.name,

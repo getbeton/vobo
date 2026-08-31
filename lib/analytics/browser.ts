@@ -18,19 +18,21 @@ export function initBrowserPostHog(key: string): void {
   posthog.init(key, {
     api_host: host,
     ui_host: 'https://us.posthog.com',
-    autocapture: true,
+    autocapture: false,
     capture_pageview: false,
     capture_pageleave: true,
-    person_profiles: 'always',
+    person_profiles: 'identified_only',
     persistence: 'cookie',
     cross_subdomain_cookie: onVoboHost(),
   });
+  (posthog as unknown as { __loaded?: boolean }).__loaded = true;
 }
 
 export function capturePageview(): void {
   if (typeof window === 'undefined') return;
   if (!(posthog as unknown as { __loaded?: boolean }).__loaded) return;
-  posthog.capture('$pageview', { $current_url: window.location.href });
+  const url = new URL(window.location.href);
+  posthog.capture('$pageview', { $current_url: `${url.origin}${url.pathname}` });
 }
 
 export { posthog };

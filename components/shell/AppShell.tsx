@@ -9,7 +9,9 @@ import {
   History,
   Activity,
   Settings,
+  UserRound,
 } from 'lucide-react';
+import { signOut } from '@/app/(login)/actions';
 import {
   readSelection,
   projectTarget,
@@ -45,6 +47,7 @@ export interface ShellData {
   /** Every project in the workspace, deterministically ordered. */
   projects: ShellProject[];
   alerts: Array<{ id: string; text: string; kind: string; at: string }>;
+  user: { name: string; email: string };
 }
 
 const chip: React.CSSProperties = {
@@ -181,6 +184,7 @@ const KEYMAP: Array<[string, string]> = [
 export function AppShell({ data, children }: { data: ShellData; children: ReactNode }) {
   const [bellOpen, setBellOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [userOpen, setUserOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
 
@@ -192,6 +196,7 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
       if (e.key === 'Escape') {
         setSheetOpen(false);
         setBellOpen(false);
+        setUserOpen(false);
       }
     };
     window.addEventListener('keydown', onKey);
@@ -415,6 +420,82 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
               </div>
             )}
           </span>
+          <span style={{ position: 'relative' }}>
+            <button
+              type="button"
+              title="Account"
+              onClick={() => {
+                setUserOpen((o) => !o);
+                setBellOpen(false);
+              }}
+              style={{ ...chip, width: 32, height: 32, padding: 0, justifyContent: 'center' }}
+            >
+              <UserRound size={15} />
+            </button>
+            {userOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 40,
+                  right: 0,
+                  width: 240,
+                  background: '#fff',
+                  border: '1px solid var(--border)',
+                  borderRadius: 10,
+                  boxShadow: 'var(--shadow-lg)',
+                  padding: 10,
+                  zIndex: 70,
+                }}
+              >
+                <div style={{ fontWeight: 600, fontSize: 13, padding: '4px 6px 2px' }}>
+                  {data.user.name || data.user.email}
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: 'var(--slate-500)',
+                    padding: '0 6px 8px',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {data.user.email}
+                </div>
+                <Link
+                  href="/admin/account"
+                  onClick={() => setUserOpen(false)}
+                  style={{
+                    display: 'block',
+                    fontSize: 13,
+                    padding: '8px 6px',
+                    borderTop: '1px solid var(--slate-100)',
+                    color: 'inherit',
+                    textDecoration: 'none',
+                  }}
+                >
+                  Password and account
+                </Link>
+                <form action={signOut}>
+                  <button
+                    type="submit"
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      textAlign: 'left',
+                      fontSize: 13,
+                      padding: '8px 6px',
+                      border: 0,
+                      background: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--red-700)',
+                    }}
+                  >
+                    Sign out
+                  </button>
+                </form>
+              </div>
+            )}
+          </span>
         </div>
       </div>
 
@@ -433,7 +514,9 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
           }}
         >
           {railItems.map(({ icon: Icon, title, href }) => {
-            const active = href && pathname.startsWith(href);
+            const active =
+              href &&
+              (pathname.startsWith(href) || (href === '/admin' && pathname === '/'));
             const inner = (
               <span
                 title={title}
