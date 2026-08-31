@@ -29,7 +29,7 @@ import { RemainingWorkChip } from '@/components/queue/RemainingWorkChip';
 import { SuggestionList, type SuggestionData } from './SuggestionLayer';
 
 export type { SuggestionData };
-import { ArtifactPane, MarkedText, useSyncScroll } from './ArtifactPane';
+import { ArtifactPane, MarkedText, useSyncScroll, type CompareMark } from './ArtifactPane';
 import { FindingData, PriorFindingsList } from './PriorFindingsRail';
 
 /**
@@ -171,7 +171,31 @@ type OverlayMark = {
   pending: boolean;
   suggestion: boolean;
   judge: 'pass' | 'fail' | null;
+  focused?: boolean;
 };
+
+function annotationPaintRange(
+  a: AnnotationData,
+  round: number
+): { startPos: number; endPos: number } | null {
+  if (a.bornRound >= round) return { startPos: a.startPos, endPos: a.endPos };
+  if (a.landing && a.landing.end > a.landing.start) {
+    return { startPos: a.landing.start, endPos: a.landing.end };
+  }
+  if (a.state === 'orphaned') return null;
+  return { startPos: a.startPos, endPos: a.endPos };
+}
+
+function priorDisplayState(f: {
+  confirmation: string | null;
+  resolved?: boolean;
+  resolvedComment?: boolean;
+  state: string | null;
+}): string {
+  if (f.confirmation === 'res' || f.resolved || f.resolvedComment) return 'resolved';
+  if (f.confirmation === 'per') return 'persisting';
+  return f.state ?? 'new';
+}
 
 export function ReviewWorkspace({
   request,
@@ -261,7 +285,9 @@ export function ReviewWorkspace({
   const shippingRef = useRef(false);
   const composerOpenRef = useRef(false);
   const suggestOpenRef = useRef(false);
+  const editingOpenRef = useRef(false);
   const coTextRef = useRef('');
+  const saveEditRef = useRef<() => void>(() => {});
   const repinForRef = useRef<string | null>(null);
   const retireForRef = useRef<string | null>(null);
   const retireReasonRef = useRef('');
@@ -269,6 +295,7 @@ export function ReviewWorkspace({
   const priorItemsRef = useRef<FindingData[]>([]);
   composerOpenRef.current = Boolean(composer);
   suggestOpenRef.current = Boolean(suggest);
+  editingOpenRef.current = Boolean(editing);
   liveSelRef.current = liveSel;
   coTextRef.current = coText;
   repinForRef.current = repinFor;
@@ -322,19 +349,26 @@ export function ReviewWorkspace({
             }
           : null;
       const marks = annotations
-        .filter((a) => a.startPos >= p.start && a.startPos < p.end)
+        .map((a) => {
+          const range = annotationPaintRange(a, request.round);
+          if (!range) return null;
+          if (!(range.startPos >= p.start && range.startPos < p.end)) return null;
+          return { ann: a, startPos: range.startPos, endPos: range.endPos };
+        })
+        .filter((row): row is { ann: AnnotationData; startPos: number; endPos: number } => row !== null)
         .sort((a, b) => a.startPos - b.startPos);
       const suggestionMarks = pendingSuggestions.filter(
         (s) => s.startPos >= p.start && s.startPos < p.end
       );
       const overlay: OverlayMark[] = [
-        ...marks.map((a) => ({
-          startPos: a.startPos,
-          endPos: a.endPos,
-          ann: a,
+        ...marks.map((row) => ({
+          startPos: row.startPos,
+          endPos: row.endPos,
+          ann: row.ann,
           pending: false,
           suggestion: false,
           judge: null,
+          focused: row.ann.id === focusFindingId,
         })),
         ...(pending
           ? [
@@ -381,6 +415,7 @@ export function ReviewWorkspace({
         pending: boolean;
         suggestion: boolean;
         judge: 'pass' | 'fail' | null;
+        focused: boolean;
       }> = [];
       let pos = p.start;
       for (const mark of overlay) {
@@ -393,6 +428,7 @@ export function ReviewWorkspace({
             pending: false,
             suggestion: false,
             judge: null,
+            focused: false,
           });
         const end = Math.min(mark.endPos, p.end);
         segs.push({
@@ -402,6 +438,7 @@ export function ReviewWorkspace({
           pending: mark.pending,
           suggestion: mark.suggestion,
           judge: mark.judge,
+          focused: Boolean(mark.focused),
         });
         pos = end;
       }
@@ -413,6 +450,7 @@ export function ReviewWorkspace({
           pending: false,
           suggestion: false,
           judge: null,
+          focused: false,
         });
       return {
         ...p,
@@ -426,11 +464,22 @@ export function ReviewWorkspace({
                 pending: false,
                 suggestion: false,
                 judge: null,
+                focused: false,
               },
             ],
       };
     });
-  }, [displayMd, annotations, composer, suggest, liveSel, hoverRange, pendingSuggestions]);
+  }, [
+    displayMd,
+    annotations,
+    composer,
+    suggest,
+    liveSel,
+    hoverRange,
+    pendingSuggestions,
+    request.round,
+    focusFindingId,
+  ]);
 
   const splitAvailable = request.round >= 2 && Boolean(previousContentMd);
   const splitOpen = splitAvailable && !currentOnly;
@@ -458,6 +507,22 @@ export function ReviewWorkspace({
       }));
   }, [annotations, request.round]);
   priorItemsRef.current = priorItems;
+  const previousMarks: CompareMark[] = useMemo(() => {
+    if (!previousContentMd) return [];
+    return priorItems.flatMap((f) => {
+      const start = previousContentMd.indexOf(f.quote);
+      if (start < 0) return [];
+      return [
+        {
+          start,
+          end: start + f.quote.length,
+          state: priorDisplayState(f),
+          low: f.confidence === 'low',
+          focused: f.id === focusFindingId,
+        },
+      ];
+    });
+  }, [previousContentMd, priorItems, focusFindingId]);
   const roundComments = annotations.filter((a) => a.bornRound === request.round);
 
   const findAbsInPane = (pane: HTMLElement, node: Node, offset: number): number | null => {
@@ -651,6 +716,9 @@ export function ReviewWorkspace({
     });
   };
   saveCommentRef.current = saveComment;
+  saveEditRef.current = () => {
+    if (editing) saveEditedComment(editing);
+  };
 
   const setCriterion = (criterionId: string, verdict: 'pass' | 'fail' | 'na') => {
     setLocalVerdict((prev) => ({ ...prev, [criterionId]: verdict }));
@@ -731,6 +799,12 @@ export function ReviewWorkspace({
     if (!el) return;
     el.scrollIntoView({ block: 'nearest' });
   }, [hoverRange, focusedCriterionId]);
+
+  useEffect(() => {
+    if (!focusFindingId) return;
+    const el = document.querySelector('[data-prior-focused]') as HTMLElement | null;
+    el?.scrollIntoView({ block: 'nearest' });
+  }, [focusFindingId]);
 
   /**
    * Go to the next ranked item, or to the queue when there is none.
@@ -847,16 +921,22 @@ export function ReviewWorkspace({
 
   const fireMainVerdict = () => {
     if (shippingRef.current) return;
+    if (appliedSuggestions.length > 0 && pendingSuggestions.length === 0) {
+      saveEdits();
+      return;
+    }
     if (pendingSuggestions.length > 0) {
       setError('Accept or reject open suggestions first');
       return;
     }
-    if (appliedSuggestions.length > 0) {
-      saveEdits();
-      return;
-    }
+    if (machineReview?.pending) return;
     if (unscored > 0) {
       setError(`Score all criteria to proceed — ${unscored} left`);
+      return;
+    }
+    if (shouldReject && rejectBlocked && !sealingPrior) return;
+    if ((sealingPrior || !shouldReject) && gateInfo?.blocked) {
+      setError(gateInfo.reasons[0] ?? 'Approve is blocked');
       return;
     }
     if (sealingPrior) {
@@ -893,6 +973,8 @@ export function ReviewWorkspace({
         }
         if (inField) return;
         setComposer(null);
+        setCoText('');
+        coTextRef.current = '';
         setEditing(null);
         setLiveSel(null);
         setSuggest(null);
@@ -910,6 +992,10 @@ export function ReviewWorkspace({
         }
         if (composerOpenRef.current) {
           saveCommentRef.current();
+          return;
+        }
+        if (editingOpenRef.current) {
+          saveEditRef.current();
           return;
         }
         if (retireForRef.current) {
@@ -937,8 +1023,31 @@ export function ReviewWorkspace({
       }
       if (e.defaultPrevented) return;
       if (inField) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const f = priorItemsRef.current.find((x) => x.id === focusFindingIdRef.current);
+      const k = e.key;
+      if (f && (k === 'c' || k === 'C' || k === 'p' || k === 'P' || k === 'o' || k === 'O' || k === 'x' || k === 'X')) {
+        e.preventDefault();
+        if (k === 'c' || k === 'C') {
+          startTransition(async () => {
+            await confirmResolutionAction(request.id, f.id, versionId);
+            router.refresh();
+          });
+        } else if (k === 'p' || k === 'P') {
+          startTransition(async () => {
+            await markPersistingAction(request.id, f.id, versionId);
+            router.refresh();
+          });
+        } else if (k === 'o' || k === 'O') {
+          openFollowUp('repin', f.id);
+        } else {
+          openFollowUp('retire', f.id);
+        }
+        return;
+      }
+      if (f && k === '?') return;
       const live = liveSelRef.current;
-      if (live && !e.metaKey && !e.ctrlKey && !e.altKey) {
+      if (live) {
         if (e.key === 'Backspace' || e.key === 'Delete') {
           e.preventDefault();
           persistSuggestionRef.current(live, '');
@@ -951,23 +1060,6 @@ export function ReviewWorkspace({
         }
       }
       if (e.key === 'a' || e.key === 'A') captureSelection();
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const f = priorItemsRef.current.find((x) => x.id === focusFindingIdRef.current);
-      if (!f) return;
-      if (e.key === 'c' || e.key === 'C') {
-        startTransition(async () => {
-          await confirmResolutionAction(request.id, f.id, versionId);
-          router.refresh();
-        });
-      }
-      if (e.key === 'p' || e.key === 'P') {
-        startTransition(async () => {
-          await markPersistingAction(request.id, f.id, versionId);
-          router.refresh();
-        });
-      }
-      if (e.key === 'o' || e.key === 'O') openFollowUp('repin', f.id);
-      if (e.key === 'x' || e.key === 'X') openFollowUp('retire', f.id);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -1003,7 +1095,7 @@ export function ReviewWorkspace({
     Boolean(machineReview?.pending && !showSave) ||
     (!showSave && unscored > 0) ||
     (!showSave && !sealingPrior && shouldReject && rejectBlocked) ||
-    (!showSave && !sealingPrior && !shouldReject && Boolean(gateInfo?.blocked));
+    (showAccept && Boolean(gateInfo?.blocked));
 
   const verdictTitle = unscored > 0
     ? `Score all criteria to proceed — ${unscored} left`
@@ -1035,8 +1127,9 @@ export function ReviewWorkspace({
               key={`${seg.start}-${seg.pending ? 'p' : ''}-${seg.suggestion ? 's' : ''}-${seg.judge ?? ''}-${seg.ann?.id ?? ''}`}
               data-seg-start={seg.start}
               data-judge-hl={seg.judge ? '1' : undefined}
-              style={
-                seg.ann
+              data-prior-focused={seg.focused ? '1' : undefined}
+              style={{
+                ...(seg.ann
                   ? annStyle(seg.ann)
                   : seg.pending
                     ? pendingStyle
@@ -1046,8 +1139,9 @@ export function ReviewWorkspace({
                         ? judgePassStyle
                         : seg.judge === 'fail'
                           ? judgeFailStyle
-                          : undefined
-              }
+                          : undefined),
+                outline: seg.focused ? '2px solid var(--blue-500)' : undefined,
+              }}
               title={
                 seg.ann
                   ? seg.ann.body
@@ -1209,6 +1303,20 @@ export function ReviewWorkspace({
         </button>
       </div>
 
+      {sealingPrior && (
+        <div
+          style={{
+            background: 'var(--amber-50)',
+            borderBottom: '1px solid var(--amber-500)',
+            color: 'var(--amber-900)',
+            padding: '8px 24px',
+            fontSize: 13,
+          }}
+        >
+          Sealing version {versionList.find((v) => v.id === acceptVersionId)?.number} ·{' '}
+          {versionList.find((v) => v.id === acceptVersionId)?.hash}
+        </div>
+      )}
       {repinFor && (
         <div
           style={{
@@ -1478,7 +1586,7 @@ export function ReviewWorkspace({
                 <ArtifactPane side="left" paneRef={leftRef} style={{ padding: '28px 40px 80px' }}>
                   <MarkedText
                     content={previousContentMd ?? ''}
-                    marks={[]}
+                    marks={previousMarks}
                     fontSize={15}
                     maxWidth={760}
                   />
@@ -1957,7 +2065,11 @@ export function ReviewWorkspace({
                     </span>
                     <button
                       type="button"
-                      onClick={() => setComposer(null)}
+                      onClick={() => {
+                        setComposer(null);
+                        setCoText('');
+                        coTextRef.current = '';
+                      }}
                       style={{ cursor: 'pointer', color: 'var(--slate-400)', fontSize: 15, border: 'none', background: 'none' }}
                     >
                       ✕
@@ -1973,7 +2085,11 @@ export function ReviewWorkspace({
                         if (e.repeat) return;
                         saveComment();
                       }
-                      if (e.key === 'Escape') setComposer(null);
+                      if (e.key === 'Escape') {
+                        setComposer(null);
+                        setCoText('');
+                        coTextRef.current = '';
+                      }
                     }}
                     rows={3}
                     placeholder="Comment — what’s wrong here and what the regeneration should say instead"
@@ -1999,7 +2115,11 @@ export function ReviewWorkspace({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setComposer(null)}
+                      onClick={() => {
+                        setComposer(null);
+                        setCoText('');
+                        coTextRef.current = '';
+                      }}
                       style={{ color: 'var(--slate-500)', fontSize: 12, cursor: 'pointer', background: 'none', border: 'none' }}
                     >
                       Cancel

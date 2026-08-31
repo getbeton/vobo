@@ -10,7 +10,8 @@ import {
   acceptSuggestion,
   saveManualEdits,
 } from '@/lib/core/suggestions';
-import { artifactVersions, reviewRequests, anchorStates } from '@/lib/db/schema';
+import { getVerifiedChain } from '@/lib/core/eventlog';
+import { artifactVersions, reviewRequests, anchorStates, annotations } from '@/lib/db/schema';
 
 const BODY = 'The first claim is invented. The second paragraph is fine.';
 
@@ -211,11 +212,18 @@ describe('VOBO-291: suggestions and Save manual edits', () => {
       userId: fx.userId,
     });
     const saved = await saveManualEdits(db, { requestId: request.id, userId: fx.userId });
+    const [ann] = await db
+      .select()
+      .from(annotations)
+      .where(eq(annotations.requestId, request.id));
+    expect(ann.bornRound).toBe(1);
+    expect(ann.quote).toBe('second paragraph');
     const states = await db
       .select()
       .from(anchorStates)
       .where(eq(anchorStates.versionId, saved.version.id));
     expect(states.length).toBeGreaterThan(0);
+    expect(states.some((s) => s.newQuote === 'second paragraph')).toBe(true);
   });
 
   it('ship refuses while a suggestion is still pending', async () => {
@@ -237,6 +245,58 @@ describe('VOBO-291: suggestions and Save manual edits', () => {
     await expect(
       ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_rerun' })
     ).rejects.toMatchObject({ code: 'unsaved_suggestions' });
+    await expect(
+      ship(db, {
+        requestId: request.id,
+        userId: fx.userId,
+        kind: 'approve_edited',
+        editedContentMd: 'Human rewrite.',
+      })
+    ).rejects.toMatchObject({ code: 'unsaved_suggestions' });
+  });
+
+  it('Accept overlapping a comment writes anchor.retired', async () => {
+    const { request } = await createReview(db, {
+      projectId: fx.projectId,
+      queueSlug: 'q',
+      customerRequestId: 'sug/overlap',
+      title: 'Dana',
+      contentMd: BODY,
+    });
+    await claim(db, request.id, fx.userId);
+    const start = BODY.indexOf('first claim');
+    await addComment(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      body: 'Invented',
+      startPos: start,
+      endPos: start + 'first claim'.length,
+    });
+    const other = await createSuggestion(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      startPos: start,
+      endPos: start + 4,
+      replacement: 'xx',
+    });
+    const sug = await createSuggestion(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      startPos: start,
+      endPos: start + 'first claim'.length,
+      replacement: 'opening line',
+    });
+    await acceptSuggestion(db, {
+      requestId: request.id,
+      suggestionId: sug.id,
+      userId: fx.userId,
+    });
+    const { rows } = await getVerifiedChain(db, request.id);
+    const types = rows.map((r) => r.type);
+    expect(types).toContain('anchor.retired');
+    expect(types).toContain('suggestion.rejected');
+    const rejected = rows.find((r) => r.type === 'suggestion.rejected');
+    expect((rejected?.payload as { suggestion_id: string }).suggestion_id).toBe(other.id);
   });
 });
 

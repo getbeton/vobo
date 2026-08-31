@@ -261,6 +261,32 @@ describe('VOBO-298: rerun judge on the current artifact', () => {
     expect(after?.state).toBe('running');
   });
 
+  it('sequential runOneJudge still completes then skips', async () => {
+    const { run } = await createPending();
+    const first = await runOneJudge(db, run.id, {
+      scorer: passAll,
+      env: { VOBO_JUDGE_OPENAI_API_KEY: 'sk-test' },
+    });
+    expect(first).toBe('completed');
+    const second = await runOneJudge(db, run.id, {
+      scorer: passAll,
+      env: { VOBO_JUDGE_OPENAI_API_KEY: 'sk-test' },
+    });
+    expect(second).toBe('skipped');
+  });
+
+  it('skips when the run is already claimed', async () => {
+    const { run } = await createPending();
+    await db.update(judgeRuns).set({ state: 'running' }).where(eq(judgeRuns.id, run.id));
+    const result = await runOneJudge(db, run.id, {
+      scorer: passAll,
+      env: { VOBO_JUDGE_OPENAI_API_KEY: 'sk-test' },
+    });
+    expect(result).toBe('skipped');
+    const after = await db.query.judgeRuns.findFirst({ where: eq(judgeRuns.id, run.id) });
+    expect(after?.state).toBe('running');
+  });
+
   it('does not change judge_blind', async () => {
     const { request, version, run } = await createPending();
     await db

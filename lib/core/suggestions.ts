@@ -10,6 +10,7 @@ import { appendEvent, Db, DbOrTx } from './eventlog';
 import { ApiProblem, classifyLiveOntoVersion } from './requests';
 import { contentHash } from './events';
 import { applyManualEdits, shiftMarks, type ManualEditOp } from './manual-edits';
+import { enqueueJudgeRun } from '@/lib/judge/enqueue';
 
 async function lockRequest(tx: DbOrTx, requestId: string) {
   const [locked] = await tx
@@ -19,8 +20,10 @@ async function lockRequest(tx: DbOrTx, requestId: string) {
     .for('update');
   if (!locked) throw new ApiProblem(404, 'request_not_found', 'Request not found');
   if (locked.archivedAt) throw new ApiProblem(409, 'archived', 'Request is archived');
-  if (['accepted', 'escalated'].includes(locked.status))
+  if (locked.status === 'accepted' || locked.status === 'escalated')
     throw new ApiProblem(409, 'terminal_status', `Request is ${locked.status}`);
+  if (locked.status !== 'open' && locked.status !== 'claimed')
+    throw new ApiProblem(409, 'not_in_review', `Request is ${locked.status}`);
   return locked;
 }
 
@@ -140,6 +143,10 @@ export async function acceptSuggestion(
           .update(manualEdits)
           .set({ status: 'rejected', decidedAt: now })
           .where(eq(manualEdits.id, o.id));
+        await appendEvent(tx, request.id, 'suggestion.rejected', {
+          suggestion_id: o.id,
+          by: input.userId,
+        });
       }
     }
     for (const o of shifted.kept) {
@@ -169,6 +176,11 @@ export async function acceptSuggestion(
           retireReason: 'overlapped by a suggestion',
         })
         .where(eq(annotations.id, o.id));
+      await appendEvent(tx, request.id, 'anchor.retired', {
+        annotation_id: o.id,
+        reason: 'overlapped by a suggestion',
+        by: input.userId,
+      });
     }
     for (const k of commentShift.kept) {
       const src = live.find((a) => a.id === k.id);
@@ -209,7 +221,7 @@ export async function rejectSuggestion(
       .where(and(eq(manualEdits.id, input.suggestionId), eq(manualEdits.requestId, request.id)))
       .for('update');
     if (!row) throw new ApiProblem(404, 'suggestion_not_found', 'Suggestion not found');
-    if (row.status !== 'pending')
+    if (row.status !== 'pending' && row.status !== 'applied')
       throw new ApiProblem(409, 'suggestion_not_pending', 'Suggestion is not pending');
     await tx
       .update(manualEdits)
@@ -266,21 +278,16 @@ export async function saveManualEdits(db: Db, input: { requestId: string; userId
       .update(reviewRequests)
       .set({ round: nextNumber, updatedAt: new Date() })
       .where(eq(reviewRequests.id, request.id));
-    await tx
-      .update(annotations)
-      .set({ bornRound: nextNumber })
-      .where(
-        and(
-          eq(annotations.requestId, request.id),
-          eq(annotations.bornRound, request.round),
-          isNull(annotations.retiredAt)
-        )
-      );
     await classifyLiveOntoVersion(tx, {
       requestId: request.id,
-      prevContentMd: version.contentMd,
+      prevContentMd: content,
       nextContentMd: content,
       nextVersionId: human.id,
+    });
+    await enqueueJudgeRun(tx, {
+      requestId: request.id,
+      versionId: human.id,
+      versionNumber: nextNumber,
     });
     await appendEvent(tx, request.id, 'version.human_saved', {
       version: nextNumber,

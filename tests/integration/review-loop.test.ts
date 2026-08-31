@@ -511,12 +511,13 @@ async function versionCount(requestId: string) {
 }
 
 /**
- * VOBO-282. Human save is the accepted artifact, verbatim. Must fail on
- * current staging: ship() still runs approveGate for approve_edited.
+ * VOBO-282. Human rewrite is the accepted artifact, verbatim. Leftover
+ * annotation gates are skipped; unscored criteria are not.
  */
 describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', () => {
-  it('overrides orphans and unscored criteria', async () => {
+  it('overrides leftover orphans after criteria are scored', async () => {
     const { request } = await round2OrphanUnscored();
+    await scoreAllPass(request.id);
     const body = 'Human rewrite of the whole letter.';
     const shipped = await ship(db, {
       requestId: request.id,
@@ -539,6 +540,30 @@ describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', (
     expect(human?.humanAuthored).toBe(true);
     expect(human?.authorKind).toBe('human');
     expect(human?.contentMd).toBe(body);
+    expect(shipped.decision.versionId).toBe(human!.id);
+
+    const { rows } = await getVerifiedChain(db, request.id);
+    const accepted = rows.find((r) => r.type === 'decision.accepted')!;
+    expect((accepted.payload as { accepted_version: number }).accepted_version).toBe(
+      human!.versionNumber
+    );
+    expect((accepted.payload as { sealed_hash: string }).sealed_hash).toBe(contentHash(body));
+  });
+
+  it('approve_edited without scores is 422 criteria_unscored', async () => {
+    const { request } = await round2OrphanUnscored();
+    await expect(
+      ship(db, {
+        requestId: request.id,
+        userId: fx.userId,
+        kind: 'approve_edited',
+        editedContentMd: 'Human rewrite of the whole letter.',
+      })
+    ).rejects.toMatchObject({ status: 422, code: 'criteria_unscored' });
+    const row = await db.query.reviewRequests.findFirst({
+      where: (t, { eq }) => eq(t.id, request.id),
+    });
+    expect(row?.status).toBe('claimed');
   });
 
   it('overrides persisting with no human confirmation', async () => {
@@ -550,6 +575,7 @@ describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', (
       contentMd: V1 + '\n\nP.S. New unrelated line.',
     });
     await claim(db, request.id, fx.userId);
+    await scoreAllPass(request.id);
     const shipped = await ship(db, {
       requestId: request.id,
       userId: fx.userId,
@@ -561,6 +587,7 @@ describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', (
 
   it('seals the submitted markdown including inner whitespace', async () => {
     const { request } = await round2OrphanUnscored();
+    await scoreAllPass(request.id);
     const body = 'Hello  \n\tworld';
     const shipped = await ship(db, {
       requestId: request.id,
@@ -596,6 +623,7 @@ describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', (
 
   it('second approve_edited is 409 and does not add a version', async () => {
     const { request } = await round2OrphanUnscored();
+    await scoreAllPass(request.id);
     await ship(db, {
       requestId: request.id,
       userId: fx.userId,
@@ -632,6 +660,7 @@ describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', (
     });
     expect(v3.request.round).toBe(3);
     await claim(db, request.id, fx.userId);
+    await scoreAllPass(request.id);
     const shipped = await ship(db, {
       requestId: request.id,
       userId: fx.userId,
@@ -780,30 +809,56 @@ describe('VOBO-289: Accept seals a chosen older version', () => {
     return { request, v1: v1! };
   }
 
-  it('Accept of v1 on round 2 with an open comment seals v1', async () => {
-    const { request, v1 } = await round2WithOpenComment();
-    for (const cid of fx.criterionIds) {
-      await setCriterionVerdict(db, {
-        requestId: request.id,
-        criterionId: cid,
-        userId: fx.userId,
-        verdict: 'pass',
-      });
-    }
-    const shipped = await ship(db, {
-      requestId: request.id,
-      userId: fx.userId,
-      kind: 'approve',
-      acceptedVersionId: v1.id,
+  it('Accept of v1 on round 2 with an open leftover does not seal', async () => {
+    const { request } = await round2Orphan();
+    const v1 = await db.query.artifactVersions.findFirst({
+      where: and(eq(artifactVersions.requestId, request.id), eq(artifactVersions.versionNumber, 1)),
     });
-    expect(shipped.status).toBe('accepted');
-    expect(shipped.sealedHash).toBe(v1.contentHash);
+    expect(v1).toBeTruthy();
+    await expect(
+      ship(db, {
+        requestId: request.id,
+        userId: fx.userId,
+        kind: 'approve',
+        acceptedVersionId: v1!.id,
+      })
+    ).rejects.toMatchObject({ code: 'approve_blocked' });
     const [row] = await db
       .select()
       .from(reviewRequests)
       .where(eq(reviewRequests.id, request.id));
-    expect(row.acceptedVersionId).toBe(v1.id);
-    expect(row.acceptedHash).toBe(v1.contentHash);
+    expect(row.status).toBe('claimed');
+    expect(row.acceptedVersionId).toBeNull();
+  });
+
+  it('Accept of v1 after leftover is resolved seals v1', async () => {
+    const { request, v2, annotationId } = await round2Orphan();
+    const v1 = await db.query.artifactVersions.findFirst({
+      where: and(eq(artifactVersions.requestId, request.id), eq(artifactVersions.versionNumber, 1)),
+    });
+    expect(v1).toBeTruthy();
+    await confirmResolution(db, request.id, annotationId, v2.version.id);
+    const shipped = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'approve',
+      acceptedVersionId: v1!.id,
+      acknowledgeInterstitials: true,
+    });
+    expect(shipped.status).toBe('accepted');
+    expect(shipped.sealedHash).toBe(v1!.contentHash);
+    expect(shipped.decision.versionId).toBe(v1!.id);
+    const [row] = await db
+      .select()
+      .from(reviewRequests)
+      .where(eq(reviewRequests.id, request.id));
+    expect(row.acceptedVersionId).toBe(v1!.id);
+    expect(row.acceptedHash).toBe(v1!.contentHash);
+
+    const { rows } = await getVerifiedChain(db, request.id);
+    const accepted = rows.find((r) => r.type === 'decision.accepted')!;
+    expect((accepted.payload as { accepted_version: number }).accepted_version).toBe(1);
+    expect((accepted.payload as { sealed_hash: string }).sealed_hash).toBe(v1!.contentHash);
   });
 
   it('unscored criteria still block Accept of v1', async () => {

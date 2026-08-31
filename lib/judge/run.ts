@@ -70,7 +70,7 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
   if (!request || !version || !pv) return 'skipped' as const;
   const policy = parsePolicyConfig(pv.config);
 
-  await db
+  const [claimed] = await db
     .update(judgeRuns)
     .set({
       state: 'running',
@@ -78,7 +78,15 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
       lastAttemptAt: now,
       startedAt: run.startedAt ?? now,
     })
-    .where(eq(judgeRuns.id, run.id));
+    .where(
+      and(
+        eq(judgeRuns.id, run.id),
+        inArray(judgeRuns.state, ['pending', 'failed']),
+        eq(judgeRuns.rerunSeq, run.rerunSeq)
+      )
+    )
+    .returning();
+  if (!claimed) return 'skipped' as const;
 
   const project = await db.query.projects.findFirst({
     where: eq(projects.id, request.projectId),
@@ -173,7 +181,7 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
         requestId: request.id,
         versionId: version.id,
         producerId: judgeProducer.id,
-        idempotencyKey: judgeIdempotencyKey(run.id, run.rerunSeq),
+        idempotencyKey: judgeIdempotencyKey(claimed.id, claimed.rerunSeq),
         findings,
         judgeRunId: run.id,
       });
@@ -233,7 +241,7 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
     const errorClass =
       (err as { class?: string }).class ??
       (message.startsWith('provider_') ? 'provider' : 'scorer');
-    const attempts = run.attempts + 1;
+    const attempts = claimed.attempts;
     const dead = attempts >= MAX_JUDGE_ATTEMPTS;
     await db
       .update(judgeRuns)

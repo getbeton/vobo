@@ -73,6 +73,7 @@ export function MarkedText({
           <span
             key={s.start}
             data-seg-start={s.start}
+            data-prior-focused={s.mark.focused ? '1' : undefined}
             style={{
               background: c.bg,
               borderBottom: `2px ${s.mark.low ? 'dashed' : 'solid'} ${c.border}`,

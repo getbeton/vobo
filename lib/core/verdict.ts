@@ -208,10 +208,7 @@ export async function ship(db: Db, input: ShipInput) {
     const untriaged = await untriagedFindings(tx, request.id, version.id);
 
     const liveEdits = await listEdits(tx, request.id, version.id);
-    if (
-      liveEdits.some((r) => r.status === 'pending' || r.status === 'applied') &&
-      input.kind !== 'approve_edited'
-    ) {
+    if (liveEdits.some((r) => r.status === 'pending' || r.status === 'applied')) {
       throw new ApiProblem(
         422,
         'unsaved_suggestions',
@@ -233,17 +230,21 @@ export async function ship(db: Db, input: ShipInput) {
         throw new ApiProblem(422, 'version_not_on_request', 'Chosen version is not on this request');
       chosenVersion = chosen;
     }
-    const sealingPrior = chosenVersion.id !== version.id;
+
+    if (input.kind === 'approve_edited') {
+      if (!input.editedContentMd || !input.editedContentMd.trim())
+        throw new ApiProblem(422, 'edited_content_required', 'approve_edited requires the edited content');
+    }
 
     if (input.kind === 'escalate') {
       if (!input.reason || input.reason.trim().length < 4)
         throw new ApiProblem(422, 'escalation_reason_required', 'Escalation reason is required');
-    } else if (input.kind !== 'approve_edited') {
+    } else {
       const gate = await approveGate(tx, input.requestId, input.userId);
       const criteriaBlock = gate.reasons.find((r) => r.startsWith('Score all criteria'));
       if (criteriaBlock) throw new ApiProblem(422, 'criteria_unscored', criteriaBlock);
 
-      if (input.kind === 'approve' && !sealingPrior) {
+      if (input.kind === 'approve') {
         if (gate.blocked)
           throw new ApiProblem(422, 'approve_blocked', gate.reasons.join(' · '));
         if (gate.interstitials.length > 0 && !input.acknowledgeInterstitials)
@@ -269,10 +270,10 @@ export async function ship(db: Db, input: ShipInput) {
     // approve of a prior version: seal that hash (VOBO-290).
     let sealedVersionId = chosenVersion.id;
     let sealedHash = chosenVersion.contentHash;
+    let acceptedVersionNumber = chosenVersion.versionNumber;
     if (input.kind === 'approve_edited') {
-      if (!input.editedContentMd || !input.editedContentMd.trim())
-        throw new ApiProblem(422, 'edited_content_required', 'approve_edited requires the edited content');
-      const hHash = contentHash(input.editedContentMd);
+      const edited = input.editedContentMd!;
+      const hHash = contentHash(edited);
       const [human] = await tx
         .insert(artifactVersions)
         .values({
@@ -280,13 +281,14 @@ export async function ship(db: Db, input: ShipInput) {
           versionNumber: request.round + 1,
           authorKind: 'human',
           authorLabel: 'human edit',
-          contentMd: input.editedContentMd,
+          contentMd: edited,
           contentHash: hHash,
           humanAuthored: true,
         })
         .returning();
       sealedVersionId = human.id;
       sealedHash = hHash;
+      acceptedVersionNumber = human.versionNumber;
     }
 
     const outgoing =
@@ -296,7 +298,7 @@ export async function ship(db: Db, input: ShipInput) {
       .insert(decisions)
       .values({
         requestId: request.id,
-        versionId: version.id,
+        versionId: sealedVersionId,
         round: request.round,
         kind: input.kind,
         reason: input.reason,
@@ -357,7 +359,7 @@ export async function ship(db: Db, input: ShipInput) {
         ...basePayload,
         kind: input.kind,
         sealed_hash: sealedHash,
-        accepted_version: chosenVersion.versionNumber,
+        accepted_version: acceptedVersionNumber,
       });
     } else if (input.kind === 'escalate') {
       newStatus = 'escalated';
@@ -457,6 +459,12 @@ export async function markCorrectionResolved(
     .update(anchorStates)
     .set({ confirmation: 'res', updatedAt: new Date() })
     .where(and(eq(anchorStates.annotationId, ann.id), eq(anchorStates.versionId, input.versionId)));
+
+  await appendEvent(tx, input.requestId, 'annotation.resolved', {
+    annotation_id: ann.id,
+    version_id: input.versionId,
+    by: input.userId,
+  });
 }
 
 export async function confirmResolution(

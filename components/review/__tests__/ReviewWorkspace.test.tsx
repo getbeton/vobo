@@ -223,6 +223,23 @@ describe('ReviewWorkspace — the comment composer', () => {
     expect(addComment).not.toHaveBeenCalled();
   });
 
+  it('Escape on composer then ⌘↵ ships after clearing the draft', async () => {
+    renderWorkspace();
+    commentOnSelection(4, 15);
+    const box = await screen.findByPlaceholderText(/what’s wrong here/i);
+    fireEvent.change(box, { target: { value: 'Never sent.' } });
+    fireEvent.keyDown(box, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByPlaceholderText(/what’s wrong here/i)).toBeNull()
+    );
+    fireEvent.keyDown(window, { key: 'Enter', metaKey: true });
+    await waitFor(() => expect(ship).toHaveBeenCalledTimes(1));
+    expect(ship.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ requestId: 'r1', kind: 'approve' })
+    );
+    expect(addComment).not.toHaveBeenCalled();
+  });
+
   it('has no Expected input', async () => {
     renderWorkspace();
     commentOnSelection(4, 15);
@@ -595,6 +612,7 @@ describe('VOBO-278: prior findings live on the workspace rail', () => {
   beforeEach(() => {
     confirmRes.mockClear();
     addComment.mockClear();
+    createSuggestion.mockClear();
   });
 
   function renderSplitWithPrior() {
@@ -624,6 +642,27 @@ describe('VOBO-278: prior findings live on the workspace rail', () => {
     fireEvent.click(screen.getByRole('button', { name: /Resolved/i }));
     await waitFor(() => expect(confirmRes).toHaveBeenCalledWith('r1', 'p1', 'v2'));
     expect(document.querySelector('[data-side="right"]')).toBeTruthy();
+  });
+
+  it('C with a live selection and a focused prior finding confirms, not type-to-suggest', async () => {
+    createSuggestion.mockClear();
+    renderSplitWithPrior();
+    fireEvent.click(screen.getByText('Drop the apology.'));
+    const pane = document.querySelector('[data-side="right"]') as HTMLElement;
+    const seg = pane.querySelector('[data-seg-start]') as HTMLElement;
+    const textNode = seg.firstChild as Text;
+    const range = document.createRange();
+    range.setStart(textNode, 4);
+    range.setEnd(textNode, 15);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    fireEvent.mouseUp(seg);
+    expect(await screen.findByTitle(/type to suggest/i)).toBeTruthy();
+    fireEvent.keyDown(window, { key: 'C' });
+    await waitFor(() => expect(confirmRes).toHaveBeenCalledWith('r1', 'p1', 'v2'));
+    expect(createSuggestion).not.toHaveBeenCalled();
+    expect(screen.queryByPlaceholderText(/Replacement text/i)).toBeNull();
   });
 });
 
@@ -796,6 +835,7 @@ describe('VOBO-289: Accept can seal an older version', () => {
     );
     expect(screen.getByTestId('verdict-button').textContent).toMatch(/Reject/);
     fireEvent.change(screen.getByTitle('Accept version'), { target: { value: 'v1' } });
+    expect(screen.getByText(/Sealing version 1/)).toBeTruthy();
     expect(screen.getByTestId('verdict-button').textContent).toMatch(/Accept/);
     fireEvent.click(screen.getByTestId('verdict-button'));
     await waitFor(() => expect(ship).toHaveBeenCalled());
