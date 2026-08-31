@@ -18,7 +18,7 @@ export const dynamic = 'force-dynamic';
 export default async function TimelinePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const user = await getUser();
-  if (!user) redirect('/sign-in');
+  if (!user) redirect('/auth');
   const request = await db.query.reviewRequests.findFirst({ where: eq(reviewRequests.id, id) });
   if (!request) notFound();
   const wsId = await workspaceOfRequestOrNull(request.id);

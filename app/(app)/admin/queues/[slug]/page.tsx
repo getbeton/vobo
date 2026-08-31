@@ -35,9 +35,9 @@ export default async function QueueAdminPage({
   const { slug } = await params;
   const sp = await searchParams;
   const me = await getUser();
-  if (!me) redirect('/sign-in');
+  if (!me) redirect('/auth');
   const membership = await currentMembership(me.id);
-  if (!membership) redirect('/sign-in');
+  if (!membership) redirect('/auth');
   const isOperator = membership.role === 'operator' || membership.role === 'admin';
 
   const projectRows = await db

@@ -88,7 +88,7 @@ export const signIn = validatedAction(signInSchema, async (data) => {
     await logActivity(row.workspaceId, row.userId, ActivityType.SIGN_IN);
   }
 
-  redirect('/dashboard');
+  redirect('/admin');
 });
 
 const signUpSchema = z.object({
@@ -145,7 +145,7 @@ export const signUp = validatedAction(signUpSchema, async (data) => {
 
   await logActivity(workspaceId, createdUserId, ActivityType.SIGN_UP);
 
-  redirect('/dashboard');
+  redirect('/admin');
 });
 
 export async function signOut() {
@@ -155,6 +155,7 @@ export async function signOut() {
     await logActivity(withWs?.workspaceId, user.id, ActivityType.SIGN_OUT);
   }
   await auth.api.signOut({ headers: await headers() });
+  redirect('/auth');
 }
 
 const updatePasswordSchema = z.object({
@@ -245,7 +246,7 @@ export const deleteAccount = validatedActionWithUser(
       throw error;
     }
 
-    redirect('/sign-in');
+    redirect('/auth');
   }
 );
 

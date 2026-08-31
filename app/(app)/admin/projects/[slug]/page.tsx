@@ -24,9 +24,9 @@ export const dynamic = 'force-dynamic';
 export default async function ProjectPage({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const me = await getUser();
-  if (!me) redirect('/sign-in');
+  if (!me) redirect('/auth');
   const membership = await currentMembership(me.id);
-  if (!membership) redirect('/sign-in');
+  if (!membership) redirect('/auth');
 
   const project = await db.query.projects.findFirst({
     where: and(eq(projects.workspaceId, membership.workspaceId), eq(projects.slug, slug)),

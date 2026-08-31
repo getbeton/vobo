@@ -23,9 +23,9 @@ export default async function QueuePage({
 }) {
   const params = await searchParams;
   const user = await getUser();
-  if (!user) redirect('/sign-in');
+  if (!user) redirect('/auth');
   const membership = await currentMembership(user.id);
-  if (!membership) redirect('/sign-in');
+  if (!membership) redirect('/auth');
 
   // Archive removes work from the board without a verdict, so it sits with
   // whoever owns the queue, not with every reviewer.

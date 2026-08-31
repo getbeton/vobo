@@ -8,10 +8,10 @@ import { AppShell, ShellData } from '@/components/shell/AppShell';
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const user = await getUser();
-  if (!user) redirect('/sign-in');
+  if (!user) redirect('/auth');
 
   const membership = await currentMembership(user.id);
-  if (!membership) redirect('/sign-in');
+  if (!membership) redirect('/auth');
 
   const workspace = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, membership.workspaceId),
@@ -61,6 +61,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const shellData: ShellData = {
     workspace: { name: workspace?.name ?? 'Workspace', href: '/admin' },
+    user: { name: user.name ?? '', email: user.email },
     projects: projectRows.map((p) => ({
       slug: p.slug,
       name: p.name,

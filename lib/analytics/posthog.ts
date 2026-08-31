@@ -37,7 +37,7 @@ async function getClient() {
   try {
     const { PostHog } = await import('posthog-node');
     client = new PostHog(key, {
-      host: process.env.POSTHOG_HOST ?? 'https://eu.i.posthog.com',
+      host: process.env.POSTHOG_HOST ?? 'https://us.i.posthog.com',
       flushAt: 20,
       flushInterval: 5_000,
     }) as unknown as typeof client;
