@@ -14,9 +14,9 @@ export const dynamic = 'force-dynamic';
  */
 export default async function EscalationsStubPage() {
   const user = await getUser();
-  if (!user) redirect('/sign-in');
+  if (!user) redirect('/auth');
   const membership = await currentMembership(user.id);
-  if (!membership) redirect('/sign-in');
+  if (!membership) redirect('/auth');
   if (!(await canOperate(user.id, membership.workspaceId))) {
     return <NoAccess detail="Escalated reviews are for operators and admins." />;
   }
