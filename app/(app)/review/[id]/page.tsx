@@ -14,12 +14,12 @@ import {
   queues,
   projects,
   judgeRecords,
-  manualEdits,
 } from '@/lib/db/schema';
 import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
 import { NoAccess } from '@/components/shell/NoAccess';
 import { parsePolicyConfig } from '@/lib/core/policy';
 import { remainingWorkForQueue } from '@/lib/core/remaining-work';
+import { listEdits } from '@/lib/core/suggestions';
 import { ReviewWorkspace } from '@/components/review/ReviewWorkspace';
 import { readFindings } from '@/lib/findings/read';
 import { mergeReviewSearch } from '@/lib/shell/crumbs';
@@ -135,6 +135,7 @@ export default async function ReviewPage({
 
   return (
     <ReviewWorkspace
+      key={version.id}
       request={{
         id: request.id,
         title: request.title,
@@ -215,12 +216,7 @@ export default async function ReviewPage({
         };
       })}
       files={files.map((f) => ({ name: f.name, kind: f.contentType ?? 'file' }))}
-      suggestions={(
-        await db
-          .select()
-          .from(manualEdits)
-          .where(eq(manualEdits.baseVersionId, version.id))
-      ).map((s) => ({
+      suggestions={(await listEdits(db, request.id, version.id)).map((s) => ({
         id: s.id,
         startPos: s.startPos,
         endPos: s.endPos,

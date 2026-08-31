@@ -47,6 +47,14 @@ describe('VOBO-291: applyManualEdits', () => {
     expect(orphaned).toEqual([comment]);
   });
 
+  it('throw mode fails when an applied range is outside the working text', () => {
+    const rows: ManualEditOp[] = [
+      { startPos: 0, endPos: 3, replacement: 'A', status: 'applied' },
+      { startPos: 400, endPos: 410, replacement: 'nope', status: 'applied' },
+    ];
+    expect(() => applyManualEdits(BASE, rows, 'throw')).toThrow('edit_range_invalid');
+  });
+
   it('empty replacement deletes the span', () => {
     const rows: ManualEditOp[] = [
       { startPos: 4, endPos: 16, replacement: '', status: 'applied' },

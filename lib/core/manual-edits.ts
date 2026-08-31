@@ -14,11 +14,22 @@ export interface ManualEditOp {
   status: ManualEditStatus;
 }
 
-export function applyManualEdits(base: string, rows: ManualEditOp[]): string {
+export function applyManualEdits(
+  base: string,
+  rows: ManualEditOp[],
+  mode: 'skip' | 'throw' = 'skip'
+): string {
   let text = base;
   for (const row of rows) {
     if (row.status !== 'applied') continue;
-    if (row.startPos < 0 || row.endPos > text.length || row.startPos > row.endPos) continue;
+    const invalid =
+      row.startPos < 0 || row.endPos > text.length || row.startPos > row.endPos;
+    if (invalid) {
+      if (mode === 'throw') {
+        throw new Error('edit_range_invalid');
+      }
+      continue;
+    }
     text = text.slice(0, row.startPos) + row.replacement + text.slice(row.endPos);
   }
   return text;

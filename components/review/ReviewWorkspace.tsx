@@ -238,6 +238,9 @@ export function ReviewWorkspace({
   const [retireReason, setRetireReason] = useState('');
   const [focusFindingId, setFocusFindingId] = useState<string | null>(null);
   const [acceptVersionId, setAcceptVersionId] = useState(versionId);
+  useEffect(() => {
+    setAcceptVersionId(versionId);
+  }, [versionId]);
   const versionList =
     versions.length > 0
       ? versions
@@ -246,6 +249,7 @@ export function ReviewWorkspace({
   // The key handler is bound once; the main verdict changes with the state.
   const mainVerdictRef = useRef<(() => void) | null>(null);
   const saveCommentRef = useRef<() => void>(() => {});
+  const saveSuggestionRef = useRef<() => void>(() => {});
   const openCommentOnRef = useRef<(range: SpanPick) => void>(() => {});
   const startSuggestDraftRef = useRef<(range: SpanPick, firstChar: string) => void>(() => {});
   const persistSuggestionRef = useRef<(range: SpanPick, replacement: string) => void>(() => {});
@@ -256,6 +260,7 @@ export function ReviewWorkspace({
   const commentBusyRef = useRef(false);
   const shippingRef = useRef(false);
   const composerOpenRef = useRef(false);
+  const suggestOpenRef = useRef(false);
   const coTextRef = useRef('');
   const repinForRef = useRef<string | null>(null);
   const retireForRef = useRef<string | null>(null);
@@ -263,6 +268,7 @@ export function ReviewWorkspace({
   const focusFindingIdRef = useRef<string | null>(null);
   const priorItemsRef = useRef<FindingData[]>([]);
   composerOpenRef.current = Boolean(composer);
+  suggestOpenRef.current = Boolean(suggest);
   liveSelRef.current = liveSel;
   coTextRef.current = coText;
   repinForRef.current = repinFor;
@@ -549,7 +555,7 @@ export function ReviewWorkspace({
         requestId: request.id,
         annotationId,
         versionId,
-        newQuote: contentMd.slice(start, end),
+        newQuote: displayMd.slice(start, end),
         newStartPos: start,
         newEndPos: end,
       });
@@ -566,6 +572,7 @@ export function ReviewWorkspace({
     if (!suggest || commentBusyRef.current) return;
     persistSuggestion(suggest, suggestText);
   };
+  saveSuggestionRef.current = saveSuggestion;
 
   useEffect(() => {
     if (retireFor) reasonRef.current?.focus();
@@ -840,6 +847,10 @@ export function ReviewWorkspace({
 
   const fireMainVerdict = () => {
     if (shippingRef.current) return;
+    if (pendingSuggestions.length > 0) {
+      setError('Accept or reject open suggestions first');
+      return;
+    }
     if (appliedSuggestions.length > 0) {
       saveEdits();
       return;
@@ -893,6 +904,10 @@ export function ReviewWorkspace({
       if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
         e.preventDefault();
         if (shippingRef.current) return;
+        if (suggestOpenRef.current) {
+          saveSuggestionRef.current();
+          return;
+        }
         if (composerOpenRef.current) {
           saveCommentRef.current();
           return;
@@ -920,6 +935,7 @@ export function ReviewWorkspace({
         if (range) openCommentOnRef.current(range);
         return;
       }
+      if (e.defaultPrevented) return;
       if (inField) return;
       const live = liveSelRef.current;
       if (live && !e.metaKey && !e.ctrlKey && !e.altKey) {
@@ -935,6 +951,7 @@ export function ReviewWorkspace({
         }
       }
       if (e.key === 'a' || e.key === 'A') captureSelection();
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       const f = priorItemsRef.current.find((x) => x.id === focusFindingIdRef.current);
       if (!f) return;
       if (e.key === 'c' || e.key === 'C') {
@@ -982,7 +999,8 @@ export function ReviewWorkspace({
   const showAccept = !showSave && (sealingPrior || !shouldReject);
   const verdictDisabled =
     shipping ||
-    (showSave && pendingSuggestions.length > 0) ||
+    pendingSuggestions.length > 0 ||
+    Boolean(machineReview?.pending && !showSave) ||
     (!showSave && unscored > 0) ||
     (!showSave && !sealingPrior && shouldReject && rejectBlocked) ||
     (!showSave && !sealingPrior && !shouldReject && Boolean(gateInfo?.blocked));

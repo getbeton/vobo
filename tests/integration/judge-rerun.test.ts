@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { ensureMigrated, truncateAll, createFixtures, db, Fixtures } from './harness';
 import { createReview, ApiProblem } from '@/lib/core/requests';
+import { approveGate } from '@/lib/core/verdict';
+import { claim } from '@/lib/core/queue';
 import { runOneJudge } from '@/lib/judge/run';
 import { rerunJudge } from '@/lib/judge/rerun';
 import { readFindings } from '@/lib/findings/read';
@@ -206,6 +208,26 @@ describe('VOBO-298: rerun judge on the current artifact', () => {
       env: { VOBO_JUDGE_OPENAI_API_KEY: 'sk-test' },
     });
     expect(result).toBe('completed');
+  });
+
+  it('purged judge findings do not satisfy the criteria gate', async () => {
+    const { request, version, run } = await createPending();
+    await runOneJudge(db, run.id, {
+      scorer: failVoice,
+      env: { VOBO_JUDGE_OPENAI_API_KEY: 'sk-test' },
+    });
+    await claim(db, request.id, fx.userId);
+    const before = await approveGate(db, request.id, fx.userId);
+    expect(before.reasons.some((r) => r.startsWith('Score all criteria'))).toBe(false);
+
+    await rerunJudge(db, {
+      requestId: request.id,
+      versionId: version.id,
+      userId: fx.userId,
+    });
+    const after = await approveGate(db, request.id, fx.userId);
+    expect(after.blocked).toBe(true);
+    expect(after.reasons.some((r) => r.startsWith('Score all criteria'))).toBe(true);
   });
 
   it('refuses accepted with 409 and leaves the run', async () => {

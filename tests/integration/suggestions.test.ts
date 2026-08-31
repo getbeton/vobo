@@ -3,14 +3,14 @@ import { eq } from 'drizzle-orm';
 import { ensureMigrated, truncateAll, createFixtures, db, Fixtures } from './harness';
 import { createReview, submitVersion } from '@/lib/core/requests';
 import { claim } from '@/lib/core/queue';
-import { setCriterionVerdict } from '@/lib/core/annotations';
+import { setCriterionVerdict, addComment } from '@/lib/core/annotations';
 import { ship } from '@/lib/core/verdict';
 import {
   createSuggestion,
   acceptSuggestion,
   saveManualEdits,
 } from '@/lib/core/suggestions';
-import { artifactVersions, reviewRequests } from '@/lib/db/schema';
+import { artifactVersions, reviewRequests, anchorStates } from '@/lib/db/schema';
 
 const BODY = 'The first claim is invented. The second paragraph is fine.';
 
@@ -136,6 +136,107 @@ describe('VOBO-291: suggestions and Save manual edits', () => {
     await expect(saveManualEdits(db, { requestId: request.id, userId: fx.userId })).rejects.toMatchObject({
       code: 'pending_suggestions',
     });
+  });
+
+  it('accept later then earlier still saves the working text', async () => {
+    const { request } = await createReview(db, {
+      projectId: fx.projectId,
+      queueSlug: 'q',
+      customerRequestId: 'sug/order',
+      title: 'Dana',
+      contentMd: BODY,
+    });
+    await claim(db, request.id, fx.userId);
+    const firstStart = BODY.indexOf('first claim');
+    const secondStart = BODY.indexOf('second');
+    const later = await createSuggestion(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      startPos: secondStart,
+      endPos: secondStart + 'second'.length,
+      replacement: '2nd',
+    });
+    const earlier = await createSuggestion(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      startPos: firstStart,
+      endPos: firstStart + 'first claim'.length,
+      replacement: 'opening line',
+    });
+    await acceptSuggestion(db, {
+      requestId: request.id,
+      suggestionId: later.id,
+      userId: fx.userId,
+    });
+    await acceptSuggestion(db, {
+      requestId: request.id,
+      suggestionId: earlier.id,
+      userId: fx.userId,
+    });
+    const saved = await saveManualEdits(db, { requestId: request.id, userId: fx.userId });
+    const human = (
+      await db.select().from(artifactVersions).where(eq(artifactVersions.requestId, request.id))
+    ).find((v) => v.versionNumber === saved.round);
+    expect(human?.contentMd).toBe(BODY.replace('first claim', 'opening line').replace('second', '2nd'));
+  });
+
+  it('Save classifies live comments onto the human version', async () => {
+    const { request } = await createReview(db, {
+      projectId: fx.projectId,
+      queueSlug: 'q',
+      customerRequestId: 'sug/classify',
+      title: 'Dana',
+      contentMd: BODY,
+    });
+    await claim(db, request.id, fx.userId);
+    const quoteStart = BODY.indexOf('second paragraph');
+    await addComment(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      body: 'Keep this',
+      startPos: quoteStart,
+      endPos: quoteStart + 'second paragraph'.length,
+    });
+    const start = BODY.indexOf('first claim');
+    const sug = await createSuggestion(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      startPos: start,
+      endPos: start + 'first claim'.length,
+      replacement: 'opening line',
+    });
+    await acceptSuggestion(db, {
+      requestId: request.id,
+      suggestionId: sug.id,
+      userId: fx.userId,
+    });
+    const saved = await saveManualEdits(db, { requestId: request.id, userId: fx.userId });
+    const states = await db
+      .select()
+      .from(anchorStates)
+      .where(eq(anchorStates.versionId, saved.version.id));
+    expect(states.length).toBeGreaterThan(0);
+  });
+
+  it('ship refuses while a suggestion is still pending', async () => {
+    const { request } = await createReview(db, {
+      projectId: fx.projectId,
+      queueSlug: 'q',
+      customerRequestId: 'sug/ship',
+      title: 'Dana',
+      contentMd: BODY,
+    });
+    await claim(db, request.id, fx.userId);
+    await createSuggestion(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      startPos: 0,
+      endPos: 3,
+      replacement: 'A',
+    });
+    await expect(
+      ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_rerun' })
+    ).rejects.toMatchObject({ code: 'unsaved_suggestions' });
   });
 });
 

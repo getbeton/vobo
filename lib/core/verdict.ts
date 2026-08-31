@@ -15,7 +15,7 @@ import { appendEvent, Db, DbOrTx } from './eventlog';
 import { ApiProblem, getPolicyForRequest } from './requests';
 import { contentHash } from './events';
 import { untriagedFindings } from '@/lib/findings/read';
-import { rejectDecisionCount } from './suggestions';
+import { listEdits, rejectDecisionCount, workingContentMd } from './suggestions';
 
 /**
  * Verdict state machine. Semantics are NORMATIVE from the design prototype's
@@ -89,7 +89,7 @@ export async function approveGate(
   const machineRows = await tx
     .select({ key: machineFindings.criterionKey })
     .from(machineFindings)
-    .where(eq(machineFindings.versionId, version.id));
+    .where(and(eq(machineFindings.versionId, version.id), isNull(machineFindings.purgedAt)));
   const humanIds = new Set(scored.map((s) => s.criterionId));
   const machineKeys = new Set(machineRows.map((m) => m.key));
   const unscored = activeCriteria.filter(
@@ -206,6 +206,20 @@ export async function ship(db: Db, input: ShipInput) {
     const policy = await getPolicyForRequest(tx, request.policyVersionId);
 
     const untriaged = await untriagedFindings(tx, request.id, version.id);
+
+    const liveEdits = await listEdits(tx, request.id, version.id);
+    if (
+      liveEdits.some((r) => r.status === 'pending' || r.status === 'applied') &&
+      input.kind !== 'approve_edited'
+    ) {
+      throw new ApiProblem(
+        422,
+        'unsaved_suggestions',
+        liveEdits.some((r) => r.status === 'pending')
+          ? 'Accept or reject open suggestions first'
+          : 'Save accepted suggestions before shipping a verdict'
+      );
+    }
 
     let chosenVersion = version;
     if (input.kind === 'approve' && input.acceptedVersionId && input.acceptedVersionId !== version.id) {
@@ -481,20 +495,33 @@ export async function repin(
       where: eq(annotations.id, input.annotationId),
     });
     if (!ann) throw new ApiProblem(404, 'annotation_not_found', 'Annotation not found');
+    const version = await tx.query.artifactVersions.findFirst({
+      where: eq(artifactVersions.id, input.versionId),
+    });
+    if (!version || version.requestId !== input.requestId)
+      throw new ApiProblem(404, 'version_not_found', 'Version not found on this request');
+    const working = await workingContentMd(tx, input.requestId, version);
+    if (
+      input.newStartPos < 0 ||
+      input.newEndPos > working.length ||
+      input.newStartPos >= input.newEndPos
+    )
+      throw new ApiProblem(422, 'invalid_range', 'Re-pin range is outside the working artifact');
+    const quote = working.slice(input.newStartPos, input.newEndPos);
     await tx.insert(repinHistory).values({
       annotationId: input.annotationId,
       versionId: input.versionId,
       oldQuote: ann.quote,
       oldStartPos: ann.startPos,
       oldEndPos: ann.endPos,
-      newQuote: input.newQuote,
+      newQuote: quote,
       newStartPos: input.newStartPos,
       newEndPos: input.newEndPos,
       userId: input.userId,
     });
     await tx
       .update(annotations)
-      .set({ quote: input.newQuote, startPos: input.newStartPos, endPos: input.newEndPos })
+      .set({ quote, startPos: input.newStartPos, endPos: input.newEndPos })
       .where(eq(annotations.id, input.annotationId));
     await tx
       .insert(anchorStates)
@@ -503,7 +530,7 @@ export async function repin(
         versionId: input.versionId,
         state: 'repinned',
         confidence: 'high',
-        newQuote: input.newQuote,
+        newQuote: quote,
         newStartPos: input.newStartPos,
         newEndPos: input.newEndPos,
       })
@@ -512,7 +539,7 @@ export async function repin(
         set: {
           state: 'repinned',
           confidence: 'high',
-          newQuote: input.newQuote,
+          newQuote: quote,
           newStartPos: input.newStartPos,
           newEndPos: input.newEndPos,
           confirmation: null,

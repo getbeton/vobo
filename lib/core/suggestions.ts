@@ -7,7 +7,7 @@ import {
   reviewRequests,
 } from '@/lib/db/schema';
 import { appendEvent, Db, DbOrTx } from './eventlog';
-import { ApiProblem } from './requests';
+import { ApiProblem, classifyLiveOntoVersion } from './requests';
 import { contentHash } from './events';
 import { applyManualEdits, shiftMarks, type ManualEditOp } from './manual-edits';
 
@@ -40,7 +40,7 @@ export async function listEdits(tx: DbOrTx, requestId: string, baseVersionId: st
     .select()
     .from(manualEdits)
     .where(and(eq(manualEdits.requestId, requestId), eq(manualEdits.baseVersionId, baseVersionId)))
-    .orderBy(asc(manualEdits.createdAt));
+    .orderBy(asc(manualEdits.decidedAt), asc(manualEdits.createdAt));
 }
 
 export async function workingContentMd(
@@ -126,7 +126,7 @@ export async function acceptSuggestion(
         and(
           eq(manualEdits.requestId, request.id),
           eq(manualEdits.baseVersionId, version.id),
-          inArray(manualEdits.status, ['pending', 'applied']),
+          eq(manualEdits.status, 'pending'),
           ne(manualEdits.id, row.id)
         )
       );
@@ -236,7 +236,16 @@ export async function saveManualEdits(db: Db, input: { requestId: string; userId
     const applied = rows.filter((r) => r.status === 'applied');
     if (applied.length === 0)
       throw new ApiProblem(422, 'no_applied_edits', 'No accepted suggestions to save');
-    const content = applyManualEdits(version.contentMd, rows as ManualEditOp[]);
+    let content: string;
+    try {
+      content = applyManualEdits(version.contentMd, rows as ManualEditOp[], 'throw');
+    } catch {
+      throw new ApiProblem(
+        422,
+        'edit_range_invalid',
+        'An accepted suggestion no longer applies — reject it and try again'
+      );
+    }
     if (!content.trim())
       throw new ApiProblem(422, 'empty_artifact', 'Edited artifact is empty');
     const nextNumber = request.round + 1;
@@ -267,6 +276,12 @@ export async function saveManualEdits(db: Db, input: { requestId: string; userId
           isNull(annotations.retiredAt)
         )
       );
+    await classifyLiveOntoVersion(tx, {
+      requestId: request.id,
+      prevContentMd: version.contentMd,
+      nextContentMd: content,
+      nextVersionId: human.id,
+    });
     await appendEvent(tx, request.id, 'version.human_saved', {
       version: nextNumber,
       content_hash: hash,
