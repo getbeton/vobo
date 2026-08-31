@@ -37,6 +37,7 @@
     "pg-boss": "^12.27.0",
     "postcss": "^8.5.3",
     "postgres": "^3.4.5",
+    "posthog-js": "^1.422.5",
     "posthog-node": "^5.48.1",
     "radix-ui": "^1.4.2",
     "react": "19.1.0",

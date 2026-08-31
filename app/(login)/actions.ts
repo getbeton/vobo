@@ -88,7 +88,7 @@ export const signIn = validatedAction(signInSchema, async (data) => {
     await logActivity(row.workspaceId, row.userId, ActivityType.SIGN_IN);
   }
 
-  redirect('/dashboard');
+  redirect('/admin');
 });
 
 const signUpSchema = z.object({
@@ -145,7 +145,7 @@ export const signUp = validatedAction(signUpSchema, async (data) => {
 
   await logActivity(workspaceId, createdUserId, ActivityType.SIGN_UP);
 
-  redirect('/dashboard');
+  redirect('/admin');
 });
 
 export async function signOut() {
@@ -245,7 +245,7 @@ export const deleteAccount = validatedActionWithUser(
       throw error;
     }
 
-    redirect('/sign-in');
+    redirect('/auth');
   }
 );
 

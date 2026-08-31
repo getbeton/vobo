@@ -28,7 +28,7 @@ export default async function ComparePage({
   const { id } = await params;
   const sp = await searchParams;
   const user = await getUser();
-  if (!user) redirect('/sign-in');
+  if (!user) redirect('/auth');
 
   const request = await db.query.reviewRequests.findFirst({ where: eq(reviewRequests.id, id) });
   if (!request) notFound();

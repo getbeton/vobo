@@ -8,7 +8,7 @@ import { clientSignIn } from '@/lib/auth/client';
  * Google sign-in. Rendered only where the deployment has a Google OAuth client
  * configured — a self-hosted install without one never sees a dead button.
  */
-export function GoogleButton({ redirectTo = '/dashboard' }: { redirectTo?: string }) {
+export function GoogleButton({ redirectTo = '/welcome' }: { redirectTo?: string }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

@@ -51,13 +51,13 @@ function initials(name: string, email: string) {
  */
 export default async function WorkspacePage() {
   const me = await getUser();
-  if (!me) redirect('/sign-in');
+  if (!me) redirect('/auth');
   const membership = await currentMembership(me.id);
-  if (!membership) redirect('/sign-in');
+  if (!membership) redirect('/auth');
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, membership.workspaceId),
   });
-  if (!ws) redirect('/sign-in');
+  if (!ws) redirect('/auth');
 
   const isOperator = membership.role === 'operator' || membership.role === 'admin';
   const isAdmin = membership.role === 'admin';

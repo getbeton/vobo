@@ -2,19 +2,30 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 import { getSessionCookie } from 'better-auth/cookies';
 
-const protectedRoutes = '/dashboard';
-
+/**
+ * `/` is the product: auth for a visitor, workspace for a signed-in user.
+ * Cookie presence is optimistic — getUser() still validates the session.
+ */
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  const isProtectedRoute = pathname.startsWith(protectedRoutes);
+  const sessionCookie = getSessionCookie(request);
 
-  if (isProtectedRoute) {
-    // Optimistic check only (cookie presence) — real session validation
-    // happens server-side in getUser(). Per BetterAuth Next.js guidance.
-    const sessionCookie = getSessionCookie(request);
-    if (!sessionCookie) {
-      return NextResponse.redirect(new URL('/sign-in', request.url));
+  if (pathname === '/') {
+    if (sessionCookie) {
+      return NextResponse.rewrite(new URL('/admin', request.url));
     }
+    return NextResponse.rewrite(new URL('/auth', request.url));
+  }
+
+  if (
+    sessionCookie &&
+    (pathname === '/auth' || pathname === '/sign-in' || pathname === '/sign-up')
+  ) {
+    return NextResponse.redirect(new URL('/', request.url));
+  }
+
+  if (pathname === '/dashboard' || pathname.startsWith('/dashboard/')) {
+    return NextResponse.redirect(new URL(sessionCookie ? '/' : '/auth', request.url));
   }
 
   return NextResponse.next();
