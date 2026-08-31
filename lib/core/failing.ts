@@ -5,9 +5,9 @@ import { Db, DbOrTx } from './eventlog';
 import { parsePolicyConfig } from './policy';
 
 /**
- * Requests that used the last policy round. A reject at round >= roundBudget
- * ships as a normal reject and sets budget_exhausted_at; this list is the
- * extra signal for operators. Status stays rejected (or whatever followed).
+ * Requests that used the last policy round. The Nth reject sets status
+ * escalated and budget_exhausted_at. Approve still closes the row. This list
+ * is the stopgap operator inbox until VOBO-300.
  */
 
 export interface FailingRow {

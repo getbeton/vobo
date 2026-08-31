@@ -315,7 +315,7 @@ describe('full regeneration loop with gates', () => {
       userId: fx.userId,
       kind: 'reject_rerun',
     });
-    expect(last.status).toBe('rejected');
+    expect(last.status).toBe('escalated');
     const after = await db.query.reviewRequests.findFirst({
       where: (t, { eq }) => eq(t.id, request.id),
     });
@@ -323,7 +323,7 @@ describe('full regeneration loop with gates', () => {
 
     await expect(
       ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_rerun' })
-    ).rejects.toMatchObject({ code: 'round_budget_exceeded' });
+    ).rejects.toMatchObject({ code: 'terminal_status' });
   });
 });
 
@@ -670,7 +670,7 @@ describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', (
     expect(shipped.status).toBe('accepted');
   });
 
-  it('accepts after budgetExhaustedAt and drops off the failing list; reject stays 422', async () => {
+  it('last-round reject escalates; a further reject is terminal; approve still closes', async () => {
     const { request } = await round2OrphanUnscored();
     await addComment(db, {
       requestId: request.id,
@@ -693,25 +693,22 @@ describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', (
       where: (t, { eq }) => eq(t.id, request.id),
     });
     expect(flagged?.budgetExhaustedAt).toBeInstanceOf(Date);
+    expect(flagged?.status).toBe('escalated');
 
     await expect(
       ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_rerun' })
-    ).rejects.toMatchObject({ code: 'round_budget_exceeded' });
+    ).rejects.toMatchObject({ code: 'terminal_status' });
 
-    const shipped = await ship(db, {
+    const closed = await ship(db, {
       requestId: request.id,
       userId: fx.userId,
       kind: 'approve_edited',
       editedContentMd: 'Human close after the wall.',
     });
-    expect(shipped.status).toBe('accepted');
+    expect(closed.status).toBe('accepted');
 
     const listed = await listFailingRequests(db, { queueId: fx.queueId });
     expect(listed.map((r) => r.id)).not.toContain(request.id);
-
-    await expect(
-      ship(db, { requestId: request.id, userId: fx.userId, kind: 'reject_rerun' })
-    ).rejects.toMatchObject({ code: 'terminal_status' });
   });
 });
 

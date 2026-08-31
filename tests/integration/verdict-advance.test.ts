@@ -145,6 +145,6 @@ describe('what comes after a verdict', () => {
       userId: tight.userId,
       kind: 'reject_rerun',
     });
-    expect(res.status).toBe('rejected');
+    expect(res.status).toBe('escalated');
   });
 });

@@ -77,7 +77,7 @@ server.tool(
 
 server.tool(
   'list_reviews',
-  'Pull work state. awaiting_version=true returns exactly the regeneration work list. changed_since takes an event-id cursor (see get_cursor); response includes max_event_id to advance it. Status is the review state, not the whole story: archived_at set means the request is off the board — do not treat it as in-flight and do not wait for a verdict. A changed_since delta includes archived rows so the cursor cannot stall on their events. accepted is terminal — never regenerate an accepted request.',
+  'Pull work state. awaiting_version=true returns exactly the regeneration work list. changed_since takes an event-id cursor (see get_cursor); response includes max_event_id to advance it. Status is the review state, not the whole story: archived_at set means the request is off the board — do not treat it as in-flight and do not wait for a verdict. A changed_since delta includes archived rows so the cursor cannot stall on their events. accepted and escalated are terminal — never regenerate those requests.',
   {
     queue: z.string().optional(),
     environment: z.enum(['production', 'test']).optional(),

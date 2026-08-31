@@ -351,11 +351,49 @@ describe('VOBO-291: reject wall counts reject decisions, not versions', () => {
       userId: fx.userId,
       kind: 'reject_rerun',
     });
-    expect(second.status).toBe('rejected');
+    expect(second.status).toBe('escalated');
     const [flagged] = await db
       .select()
       .from(reviewRequests)
       .where(eq(reviewRequests.id, request.id));
     expect(flagged.budgetExhaustedAt).toBeInstanceOf(Date);
+    expect(flagged.status).toBe('escalated');
+  });
+
+  it('Save then the first reject at budget 2 is still a rewrite', async () => {
+    const { request } = await createReview(db, {
+      projectId: fx.projectId,
+      queueSlug: 'q',
+      customerRequestId: 'sug/wall-save-first',
+      title: 'Dana',
+      contentMd: BODY,
+    });
+    await claim(db, request.id, fx.userId);
+    const sug = await createSuggestion(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      startPos: 0,
+      endPos: 3,
+      replacement: 'THE',
+    });
+    await acceptSuggestion(db, {
+      requestId: request.id,
+      suggestionId: sug.id,
+      userId: fx.userId,
+    });
+    await saveManualEdits(db, { requestId: request.id, userId: fx.userId });
+    await scoreAll(request.id, 'fail');
+    const first = await ship(db, {
+      requestId: request.id,
+      userId: fx.userId,
+      kind: 'reject_rerun',
+    });
+    expect(first.status).toBe('rejected');
+    const [row] = await db
+      .select()
+      .from(reviewRequests)
+      .where(eq(reviewRequests.id, request.id));
+    expect(row.status).toBe('rejected');
+    expect(row.budgetExhaustedAt).toBeNull();
   });
 });

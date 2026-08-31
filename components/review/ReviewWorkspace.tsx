@@ -105,6 +105,8 @@ interface RequestData {
   policyLabel: string;
   roundBudget: number;
   budgetExhausted: boolean;
+  /** Reject decisions already on the request. Last-round uses count, not version. */
+  rejectCount: number;
 }
 
 function queueRef(request: RequestData): QueueRef {
@@ -892,8 +894,10 @@ export function ReviewWorkspace({
     });
   };
 
-  const budgetReached = request.round >= request.roundBudget;
-  const rejectBlocked = request.budgetExhausted;
+  const budgetReached = request.rejectCount + 1 >= request.roundBudget;
+  const rejectBlocked = request.status === 'escalated';
+  const lastRoundReject =
+    budgetReached && shouldReject && !sealingPrior && appliedSuggestions.length === 0;
 
   const commitRetire = () => {
     const annotationId = retireForRef.current;
@@ -929,8 +933,8 @@ export function ReviewWorkspace({
       setError('Accept or reject open suggestions first');
       return;
     }
-    if (machineReview?.pending) return;
-    if (unscored > 0) {
+    if (machineReview?.pending && !lastRoundReject) return;
+    if (unscored > 0 && !lastRoundReject) {
       setError(`Score all criteria to proceed — ${unscored} left`);
       return;
     }
@@ -1092,22 +1096,24 @@ export function ReviewWorkspace({
   const verdictDisabled =
     shipping ||
     pendingSuggestions.length > 0 ||
-    Boolean(machineReview?.pending && !showSave) ||
-    (!showSave && unscored > 0) ||
+    Boolean(machineReview?.pending && !showSave && !lastRoundReject) ||
+    (!showSave && unscored > 0 && !lastRoundReject) ||
     (!showSave && !sealingPrior && shouldReject && rejectBlocked) ||
     (showAccept && Boolean(gateInfo?.blocked));
 
-  const verdictTitle = unscored > 0
-    ? `Score all criteria to proceed — ${unscored} left`
-    : shouldReject
-      ? rejectBlocked
-        ? 'This request already used the last policy round'
-        : unresolved.length > 0
-          ? `Ships ${unresolved.length} anchored correction(s) with the rejection`
-          : 'Reject and rerun without corrections'
-      : gateInfo?.blocked
-        ? gateInfo.reasons[0]
-        : 'Seals the content hash and ships a signed decision';
+  const verdictTitle = lastRoundReject
+    ? 'Reject flags this for an operator and opens the next item'
+    : unscored > 0
+      ? `Score all criteria to proceed — ${unscored} left`
+      : shouldReject
+        ? rejectBlocked
+          ? 'This request is flagged for an operator'
+          : unresolved.length > 0
+            ? `Ships ${unresolved.length} anchored correction(s) with the rejection`
+            : 'Reject and rerun without corrections'
+        : gateInfo?.blocked
+          ? gateInfo.reasons[0]
+          : 'Seals the content hash and ships a signed decision';
 
   const currentParagraphs = (
     <div style={{ padding: '28px 40px 80px', maxWidth: 760 }}>
@@ -1220,7 +1226,7 @@ export function ReviewWorkspace({
             {unresolved.length} unresolved comment{unresolved.length > 1 ? 's' : ''}
           </span>
         )}
-        {unscored > 0 && (
+        {unscored > 0 && !lastRoundReject && (
           <span
             style={{
               background: 'var(--amber-100)',
@@ -1341,9 +1347,9 @@ export function ReviewWorkspace({
             fontSize: 13,
           }}
         >
-          {request.budgetExhausted
-            ? 'This request used the last policy round. A further reject is refused.'
-            : 'This is the last round. A reject flags the request for an operator.'}
+          {request.budgetExhausted || request.status === 'escalated'
+            ? 'This request is flagged for an operator. Reject is done.'
+            : 'Last round. Reject flags this for an operator and opens the next item.'}
         </div>
       )}
       {error && (

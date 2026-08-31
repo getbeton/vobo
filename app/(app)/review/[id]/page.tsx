@@ -19,7 +19,7 @@ import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
 import { NoAccess } from '@/components/shell/NoAccess';
 import { parsePolicyConfig } from '@/lib/core/policy';
 import { remainingWorkForQueue } from '@/lib/core/remaining-work';
-import { listEdits } from '@/lib/core/suggestions';
+import { listEdits, rejectDecisionCount } from '@/lib/core/suggestions';
 import { ReviewWorkspace } from '@/components/review/ReviewWorkspace';
 import { readFindings } from '@/lib/findings/read';
 import { mergeReviewSearch } from '@/lib/shell/crumbs';
@@ -149,6 +149,7 @@ export default async function ReviewPage({
         policyLabel: pv ? `policy v${pv.version}` : '',
         roundBudget: policy?.roundBudget ?? 3,
         budgetExhausted: Boolean(request.budgetExhaustedAt),
+        rejectCount: await rejectDecisionCount(db, request.id),
       }}
       contentMd={version.contentMd}
       previousContentMd={previous?.contentMd ?? null}
