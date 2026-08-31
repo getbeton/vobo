@@ -15,6 +15,7 @@ import { appendEvent, Db, DbOrTx } from './eventlog';
 import { ApiProblem, getPolicyForRequest } from './requests';
 import { contentHash } from './events';
 import { untriagedFindings } from '@/lib/findings/read';
+import { listEdits, rejectDecisionCount, workingContentMd } from './suggestions';
 
 /**
  * Verdict state machine. Semantics are NORMATIVE from the design prototype's
@@ -88,7 +89,7 @@ export async function approveGate(
   const machineRows = await tx
     .select({ key: machineFindings.criterionKey })
     .from(machineFindings)
-    .where(eq(machineFindings.versionId, version.id));
+    .where(and(eq(machineFindings.versionId, version.id), isNull(machineFindings.purgedAt)));
   const humanIds = new Set(scored.map((s) => s.criterionId));
   const machineKeys = new Set(machineRows.map((m) => m.key));
   const unscored = activeCriteria.filter(
@@ -110,23 +111,34 @@ export async function approveGate(
   if (request.round > 1) {
     const prior = rows.filter((r) => r.ann.bornRound < request.round && r.state);
     const persisting = prior.filter(
-      (r) => r.state!.state === 'persisting' && r.state!.confirmation !== 'res'
+      (r) =>
+        r.state!.state === 'persisting' &&
+        r.state!.confirmation !== 'res' &&
+        !isHumanResolved(r.ann, r.state)
     );
     if (persisting.length > 0) {
       reasons.push(`${persisting.length} correction(s) persisting — the model ignored them`);
     }
-    const orphaned = prior.filter((r) => r.state!.state === 'orphaned');
+    const orphaned = prior.filter(
+      (r) => r.state!.state === 'orphaned' && !isHumanResolved(r.ann, r.state)
+    );
     if (orphaned.length > 0) {
-      reasons.push(`${orphaned.length} orphaned anchor(s) — re-pin or retire`);
+      reasons.push(`${orphaned.length} orphaned anchor(s) — resolve (C), re-pin or retire`);
     }
     const repinnedUnjudged = prior.filter(
-      (r) => r.state!.state === 'repinned' && !r.state!.confirmation
+      (r) =>
+        r.state!.state === 'repinned' &&
+        !r.state!.confirmation &&
+        !isHumanResolved(r.ann, r.state)
     );
     if (repinnedUnjudged.length > 0) {
       reasons.push(`${repinnedUnjudged.length} re-pinned anchor(s) unjudged — resolved or persists`);
     }
     const unconfirmedResolved = prior.filter(
-      (r) => r.state!.state === 'resolved' && !r.state!.confirmation
+      (r) =>
+        r.state!.state === 'resolved' &&
+        !r.state!.confirmation &&
+        !isHumanResolved(r.ann, r.state)
     );
     if (unconfirmedResolved.length > 0) {
       interstitials.push(
@@ -143,6 +155,7 @@ export async function outgoingCorrections(tx: DbOrTx, requestId: string) {
   const { request, version } = await loadContext(tx, requestId);
   const rows = await annotationStates(tx, requestId, version.id);
   const out = rows.filter((r) => {
+    if (isHumanResolved(r.ann, r.state)) return false;
     if (r.ann.bornRound === request.round && !r.ann.resolvedAt) return true; // new
     if (!r.state) return false;
     if (r.state.state === 'persisting' && r.state.confirmation !== 'res') return true; // re-asserted
@@ -173,6 +186,8 @@ export interface ShipInput {
   editedContentMd?: string;
   /** Ship despite untriaged machine findings. Recorded on the signed event. */
   overrideUntriagedFindings?: boolean;
+  /** Approve of a chosen version (VOBO-290). Default is the current round. */
+  acceptedVersionId?: string;
 }
 
 export async function ship(db: Db, input: ShipInput) {
@@ -192,6 +207,35 @@ export async function ship(db: Db, input: ShipInput) {
 
     const untriaged = await untriagedFindings(tx, request.id, version.id);
 
+    const liveEdits = await listEdits(tx, request.id, version.id);
+    if (liveEdits.some((r) => r.status === 'pending' || r.status === 'applied')) {
+      throw new ApiProblem(
+        422,
+        'unsaved_suggestions',
+        liveEdits.some((r) => r.status === 'pending')
+          ? 'Accept or reject open suggestions first'
+          : 'Save accepted suggestions before shipping a verdict'
+      );
+    }
+
+    let chosenVersion = version;
+    if (input.kind === 'approve' && input.acceptedVersionId && input.acceptedVersionId !== version.id) {
+      const chosen = await tx.query.artifactVersions.findFirst({
+        where: and(
+          eq(artifactVersions.id, input.acceptedVersionId),
+          eq(artifactVersions.requestId, request.id)
+        ),
+      });
+      if (!chosen)
+        throw new ApiProblem(422, 'version_not_on_request', 'Chosen version is not on this request');
+      chosenVersion = chosen;
+    }
+
+    if (input.kind === 'approve_edited') {
+      if (!input.editedContentMd || !input.editedContentMd.trim())
+        throw new ApiProblem(422, 'edited_content_required', 'approve_edited requires the edited content');
+    }
+
     if (input.kind === 'escalate') {
       if (!input.reason || input.reason.trim().length < 4)
         throw new ApiProblem(422, 'escalation_reason_required', 'Escalation reason is required');
@@ -200,7 +244,7 @@ export async function ship(db: Db, input: ShipInput) {
       const criteriaBlock = gate.reasons.find((r) => r.startsWith('Score all criteria'));
       if (criteriaBlock) throw new ApiProblem(422, 'criteria_unscored', criteriaBlock);
 
-      if (input.kind === 'approve' || input.kind === 'approve_edited') {
+      if (input.kind === 'approve') {
         if (gate.blocked)
           throw new ApiProblem(422, 'approve_blocked', gate.reasons.join(' · '));
         if (gate.interstitials.length > 0 && !input.acknowledgeInterstitials)
@@ -223,12 +267,13 @@ export async function ship(db: Db, input: ShipInput) {
     }
 
     // approve_edited: the human's fix becomes the acceptance candidate version.
-    let sealedVersionId = version.id;
-    let sealedHash = version.contentHash;
+    // approve of a prior version: seal that hash (VOBO-290).
+    let sealedVersionId = chosenVersion.id;
+    let sealedHash = chosenVersion.contentHash;
+    let acceptedVersionNumber = chosenVersion.versionNumber;
     if (input.kind === 'approve_edited') {
-      if (!input.editedContentMd)
-        throw new ApiProblem(422, 'edited_content_required', 'approve_edited requires the edited content');
-      const hHash = contentHash(input.editedContentMd);
+      const edited = input.editedContentMd!;
+      const hHash = contentHash(edited);
       const [human] = await tx
         .insert(artifactVersions)
         .values({
@@ -236,13 +281,14 @@ export async function ship(db: Db, input: ShipInput) {
           versionNumber: request.round + 1,
           authorKind: 'human',
           authorLabel: 'human edit',
-          contentMd: input.editedContentMd,
+          contentMd: edited,
           contentHash: hHash,
           humanAuthored: true,
         })
         .returning();
       sealedVersionId = human.id;
       sealedHash = hHash;
+      acceptedVersionNumber = human.versionNumber;
     }
 
     const outgoing =
@@ -252,7 +298,7 @@ export async function ship(db: Db, input: ShipInput) {
       .insert(decisions)
       .values({
         requestId: request.id,
-        versionId: version.id,
+        versionId: sealedVersionId,
         round: request.round,
         kind: input.kind,
         reason: input.reason,
@@ -313,6 +359,7 @@ export async function ship(db: Db, input: ShipInput) {
         ...basePayload,
         kind: input.kind,
         sealed_hash: sealedHash,
+        accepted_version: acceptedVersionNumber,
       });
     } else if (input.kind === 'escalate') {
       newStatus = 'escalated';
@@ -328,9 +375,10 @@ export async function ship(db: Db, input: ShipInput) {
     } else {
       newStatus = 'rejected';
       const at = new Date();
+      const rejectCount = await rejectDecisionCount(tx, request.id);
       const exhaustBudget =
         (input.kind === 'reject_corrections' || input.kind === 'reject_rerun') &&
-        request.round >= policy.roundBudget &&
+        rejectCount >= policy.roundBudget &&
         !locked.budgetExhaustedAt;
       await tx
         .update(reviewRequests)
@@ -378,11 +426,57 @@ export async function ship(db: Db, input: ShipInput) {
 // Compare-rail actions: confirm / persist / re-pin / retire (VOBO-22 backend)
 // ---------------------------------------------------------------------------
 
-export async function confirmResolution(db: Db, requestId: string, annotationId: string, versionId: string) {
-  await db
+/** Human Resolve / C wins over the stored classifier enum. History stays. */
+export function isHumanResolved(
+  ann: { resolvedAt: Date | null },
+  state: { confirmation: 'res' | 'per' | null } | null | undefined
+): boolean {
+  return Boolean(ann.resolvedAt) || state?.confirmation === 'res';
+}
+
+/**
+ * One write for both surfaces: comment-rail Resolve and compare C.
+ * Classifier `state` is left as stored history.
+ */
+export async function markCorrectionResolved(
+  tx: DbOrTx,
+  input: { requestId: string; annotationId: string; versionId: string; userId?: string }
+) {
+  const ann = await tx.query.annotations.findFirst({
+    where: and(eq(annotations.id, input.annotationId), eq(annotations.requestId, input.requestId)),
+  });
+  if (!ann) throw new ApiProblem(404, 'annotation_not_found', 'Annotation not found');
+
+  await tx
+    .update(annotations)
+    .set({
+      resolvedAt: ann.resolvedAt ?? new Date(),
+      resolvedBy: ann.resolvedBy ?? input.userId ?? null,
+    })
+    .where(eq(annotations.id, ann.id));
+
+  await tx
     .update(anchorStates)
     .set({ confirmation: 'res', updatedAt: new Date() })
-    .where(and(eq(anchorStates.annotationId, annotationId), eq(anchorStates.versionId, versionId)));
+    .where(and(eq(anchorStates.annotationId, ann.id), eq(anchorStates.versionId, input.versionId)));
+
+  await appendEvent(tx, input.requestId, 'annotation.resolved', {
+    annotation_id: ann.id,
+    version_id: input.versionId,
+    by: input.userId,
+  });
+}
+
+export async function confirmResolution(
+  db: Db,
+  requestId: string,
+  annotationId: string,
+  versionId: string,
+  userId?: string
+) {
+  await db.transaction(async (tx) => {
+    await markCorrectionResolved(tx, { requestId, annotationId, versionId, userId });
+  });
 }
 
 export async function markPersisting(db: Db, requestId: string, annotationId: string, versionId: string) {
@@ -409,20 +503,33 @@ export async function repin(
       where: eq(annotations.id, input.annotationId),
     });
     if (!ann) throw new ApiProblem(404, 'annotation_not_found', 'Annotation not found');
+    const version = await tx.query.artifactVersions.findFirst({
+      where: eq(artifactVersions.id, input.versionId),
+    });
+    if (!version || version.requestId !== input.requestId)
+      throw new ApiProblem(404, 'version_not_found', 'Version not found on this request');
+    const working = await workingContentMd(tx, input.requestId, version);
+    if (
+      input.newStartPos < 0 ||
+      input.newEndPos > working.length ||
+      input.newStartPos >= input.newEndPos
+    )
+      throw new ApiProblem(422, 'invalid_range', 'Re-pin range is outside the working artifact');
+    const quote = working.slice(input.newStartPos, input.newEndPos);
     await tx.insert(repinHistory).values({
       annotationId: input.annotationId,
       versionId: input.versionId,
       oldQuote: ann.quote,
       oldStartPos: ann.startPos,
       oldEndPos: ann.endPos,
-      newQuote: input.newQuote,
+      newQuote: quote,
       newStartPos: input.newStartPos,
       newEndPos: input.newEndPos,
       userId: input.userId,
     });
     await tx
       .update(annotations)
-      .set({ quote: input.newQuote, startPos: input.newStartPos, endPos: input.newEndPos })
+      .set({ quote, startPos: input.newStartPos, endPos: input.newEndPos })
       .where(eq(annotations.id, input.annotationId));
     await tx
       .insert(anchorStates)
@@ -431,7 +538,7 @@ export async function repin(
         versionId: input.versionId,
         state: 'repinned',
         confidence: 'high',
-        newQuote: input.newQuote,
+        newQuote: quote,
         newStartPos: input.newStartPos,
         newEndPos: input.newEndPos,
       })
@@ -440,7 +547,7 @@ export async function repin(
         set: {
           state: 'repinned',
           confidence: 'high',
-          newQuote: input.newQuote,
+          newQuote: quote,
           newStartPos: input.newStartPos,
           newEndPos: input.newEndPos,
           confirmation: null,

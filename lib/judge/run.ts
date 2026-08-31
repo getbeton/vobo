@@ -20,6 +20,11 @@ import { autoevalsScorer } from './autoevals';
 const BACKOFF_SECONDS = [10, 60, 180];
 export const MAX_JUDGE_ATTEMPTS = BACKOFF_SECONDS.length;
 
+/** First ingest stays `judge:${runId}` so existing batches still replay. */
+export function judgeIdempotencyKey(runId: string, rerunSeq: number) {
+  return rerunSeq > 0 ? `judge:${runId}:${rerunSeq}` : `judge:${runId}`;
+}
+
 export interface JudgeDeps {
   scorer?: JudgeScorer;
   now?: () => Date;
@@ -65,7 +70,7 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
   if (!request || !version || !pv) return 'skipped' as const;
   const policy = parsePolicyConfig(pv.config);
 
-  await db
+  const [claimed] = await db
     .update(judgeRuns)
     .set({
       state: 'running',
@@ -73,7 +78,15 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
       lastAttemptAt: now,
       startedAt: run.startedAt ?? now,
     })
-    .where(eq(judgeRuns.id, run.id));
+    .where(
+      and(
+        eq(judgeRuns.id, run.id),
+        inArray(judgeRuns.state, ['pending', 'failed']),
+        eq(judgeRuns.rerunSeq, run.rerunSeq)
+      )
+    )
+    .returning();
+  if (!claimed) return 'skipped' as const;
 
   const project = await db.query.projects.findFirst({
     where: eq(projects.id, request.projectId),
@@ -168,7 +181,7 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
         requestId: request.id,
         versionId: version.id,
         producerId: judgeProducer.id,
-        idempotencyKey: `judge:${run.id}`,
+        idempotencyKey: judgeIdempotencyKey(claimed.id, claimed.rerunSeq),
         findings,
         judgeRunId: run.id,
       });
@@ -228,7 +241,7 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
     const errorClass =
       (err as { class?: string }).class ??
       (message.startsWith('provider_') ? 'provider' : 'scorer');
-    const attempts = run.attempts + 1;
+    const attempts = claimed.attempts;
     const dead = attempts >= MAX_JUDGE_ATTEMPTS;
     await db
       .update(judgeRuns)

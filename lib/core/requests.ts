@@ -1,4 +1,4 @@
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import {
   reviewRequests,
   artifactVersions,
@@ -28,6 +28,71 @@ export class ApiProblem extends Error {
 
 /** Artifacts above this size classify asynchronously (decision 2A guard). */
 export const SYNC_CLASSIFY_LIMIT = 500 * 1024;
+
+/** Re-anchor every live annotation onto a new version. Used by submit and by Save. */
+export async function classifyLiveOntoVersion(
+  tx: DbOrTx,
+  input: {
+    requestId: string;
+    prevContentMd: string;
+    nextContentMd: string;
+    nextVersionId: string;
+  }
+): Promise<{ resolved: number; persisting: number; orphaned: number }> {
+  const counters = { resolved: 0, persisting: 0, orphaned: 0 };
+  if (input.nextContentMd.length > SYNC_CLASSIFY_LIMIT) return counters;
+
+  const live = await tx
+    .select()
+    .from(annotations)
+    .where(and(eq(annotations.requestId, input.requestId), isNull(annotations.retiredAt)));
+
+  for (const ann of live) {
+    const computed = applyConfirmation(
+      classify(
+        {
+          quote: ann.quote,
+          prefix: ann.prefix,
+          suffix: ann.suffix,
+          startPos: ann.startPos,
+          endPos: ann.endPos,
+        },
+        input.prevContentMd,
+        input.nextContentMd
+      ),
+      null
+    );
+    counters[computed.state] += 1;
+
+    await tx
+      .insert(anchorStates)
+      .values({
+        annotationId: ann.id,
+        versionId: input.nextVersionId,
+        state: computed.state,
+        confidence: computed.confidence,
+        newQuote: computed.landing?.quote ?? null,
+        newStartPos: computed.landing?.start ?? null,
+        newEndPos: computed.landing?.end ?? null,
+      })
+      .onConflictDoNothing();
+
+    if (computed.state === 'persisting' && computed.landing) {
+      const p = input.nextContentMd;
+      await tx
+        .update(annotations)
+        .set({
+          quote: computed.landing.quote,
+          startPos: computed.landing.start,
+          endPos: computed.landing.end,
+          prefix: p.slice(Math.max(0, computed.landing.start - 32), computed.landing.start),
+          suffix: p.slice(computed.landing.end, computed.landing.end + 32),
+        })
+        .where(eq(annotations.id, ann.id));
+    }
+  }
+  return counters;
+}
 
 export interface CreateReviewInput {
   projectId: string;
@@ -250,63 +315,13 @@ export async function submitVersion(db: Db, input: SubmitVersionInput) {
       })
       .returning();
 
-    // Re-anchor every live annotation (decision 2A: sync under the guard).
-    const live = await tx
-      .select()
-      .from(annotations)
-      .where(and(eq(annotations.requestId, request.id), sql`${annotations.retiredAt} is null`));
-
-    const counters = { resolved: 0, persisting: 0, orphaned: 0 };
     const oversized = input.contentMd.length > SYNC_CLASSIFY_LIMIT;
-
-    if (!oversized) {
-      for (const ann of live) {
-        const computed = applyConfirmation(
-          classify(
-            {
-              quote: ann.quote,
-              prefix: ann.prefix,
-              suffix: ann.suffix,
-              startPos: ann.startPos,
-              endPos: ann.endPos,
-            },
-            prevVersion.contentMd,
-            input.contentMd
-          ),
-          null
-        );
-        counters[computed.state] += 1;
-
-        await tx
-          .insert(anchorStates)
-          .values({
-            annotationId: ann.id,
-            versionId: version.id,
-            state: computed.state,
-            confidence: computed.confidence,
-            newQuote: computed.landing?.quote ?? null,
-            newStartPos: computed.landing?.start ?? null,
-            newEndPos: computed.landing?.end ?? null,
-          })
-          .onConflictDoNothing();
-
-        // Persisting anchors carry the annotation forward: its selector now
-        // points at the landing on the new version (history in anchor_states).
-        if (computed.state === 'persisting' && computed.landing) {
-          const p = input.contentMd;
-          await tx
-            .update(annotations)
-            .set({
-              quote: computed.landing.quote,
-              startPos: computed.landing.start,
-              endPos: computed.landing.end,
-              prefix: p.slice(Math.max(0, computed.landing.start - 32), computed.landing.start),
-              suffix: p.slice(computed.landing.end, computed.landing.end + 32),
-            })
-            .where(eq(annotations.id, ann.id));
-        }
-      }
-    }
+    const counters = await classifyLiveOntoVersion(tx, {
+      requestId: request.id,
+      prevContentMd: prevVersion.contentMd,
+      nextContentMd: input.contentMd,
+      nextVersionId: version.id,
+    });
 
     if (input.responses?.length) {
       await tx.insert(versionResponses).values(
