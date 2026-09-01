@@ -21,7 +21,8 @@ import {
  */
 
 const createSchema = z.object({
-  queue: z.string().min(1),
+  template: z.string().min(1).optional(),
+  queue: z.string().min(1).optional(),
   environment: z.enum(['production', 'test']).optional(),
   request_id: z.string().min(1).max(255),
   title: z.string().min(1).max(300),
@@ -42,6 +43,7 @@ export async function POST(req: Request) {
     const body = createSchema.parse(await req.json());
     const result = await createReview(db, {
       projectId: principal.projectId,
+      templateSlug: body.template,
       queueSlug: body.queue,
       environment: body.environment,
       customerRequestId: body.request_id,

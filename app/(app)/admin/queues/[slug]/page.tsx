@@ -248,6 +248,7 @@ export default async function QueueAdminPage({
 
             <SettingRow
               label="Round budget"
+              source={resolved.sources.roundBudget}
               value={
                 hasBudgetOverride
                   ? `${resolved.config.roundBudget} rounds · override`
@@ -271,6 +272,7 @@ export default async function QueueAdminPage({
             />
             <SettingRow
               label="Blind-N review"
+              source={resolved.sources.blindN}
               value={
                 hasBlindOverride
                   ? resolved.config.blindN
@@ -320,6 +322,7 @@ export default async function QueueAdminPage({
             </div>
             <SettingRow
               label="LLM judge"
+              source={resolved.sources.judgeEnabled}
               value={
                 hasJudgeOverride
                   ? `${resolved.config.judgeEnabled ? 'on' : 'off'} · override`
@@ -348,6 +351,7 @@ export default async function QueueAdminPage({
             />
             <SettingRow
               label="Judge sampling"
+              source={resolved.sources.judgeSamplingPct}
               value={`${resolved.config.judgeSamplingPct}%${hasJudgeSampleOverride ? ' · override' : ''}`}
               canEdit={isOperator}
               apply={apply}
@@ -360,6 +364,7 @@ export default async function QueueAdminPage({
             />
             <SettingRow
               label="Judge-blind sampling"
+              source={resolved.sources.judgeBlindSamplingPct}
               value={
                 resolved.config.judgeBlindSamplingPct
                   ? `${resolved.config.judgeBlindSamplingPct}% — output withheld permanently`

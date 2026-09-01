@@ -13,8 +13,9 @@ import {
   real,
   uniqueIndex,
   index,
+  foreignKey,
 } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import { randomBytes } from 'crypto';
 
 // ---------------------------------------------------------------------------
@@ -281,8 +282,42 @@ export const apiKeys = pgTable('api_keys', {
 });
 
 // ---------------------------------------------------------------------------
-// Queues, policy versions, criteria
+// Policy templates, queues, policy versions, criteria
 // ---------------------------------------------------------------------------
+
+// Named templates at workspace (projectId null) or project level. A queue
+// instantiates exactly one into a singular live Policy (policy_versions).
+export const policyTemplates = pgTable(
+  'policy_templates',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: integer('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+    projectId: uuid('project_id').references(() => projects.id),
+    parentTemplateId: uuid('parent_template_id'),
+    name: varchar('name', { length: 100 }).notNull(),
+    slug: varchar('slug', { length: 64 }).notNull(),
+    config: jsonb('config').notNull().default({}),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('policy_templates_ws_slug_uq')
+      .on(t.workspaceId, t.slug)
+      .where(sql`${t.projectId} is null`),
+    uniqueIndex('policy_templates_project_slug_uq')
+      .on(t.projectId, t.slug)
+      .where(sql`${t.projectId} is not null`),
+    index('policy_templates_workspace_idx').on(t.workspaceId),
+    index('policy_templates_project_idx').on(t.projectId),
+    foreignKey({
+      columns: [t.parentTemplateId],
+      foreignColumns: [t.id],
+      name: 'policy_templates_parent_id_policy_templates_id_fk',
+    }),
+  ]
+);
 
 export const queues = pgTable(
   'queues',
@@ -296,9 +331,11 @@ export const queues = pgTable(
     environment: queueEnvironmentEnum('environment').notNull().default('production'),
     modality: queueModalityEnum('modality').notNull().default('text'),
     openForReview: boolean('open_for_review').notNull().default(true),
-    // Explicit per-queue overrides of workspace policy defaults. Only the keys
-    // an operator has actually set live here; everything else inherits. The
-    // resolved snapshot is what gets frozen into a policy_versions row.
+    templateId: uuid('template_id')
+      .notNull()
+      .references(() => policyTemplates.id),
+    // Explicit per-queue overrides of the instantiated template. Only keys an
+    // operator has actually set live here; everything else inherits.
     policyOverrides: jsonb('policy_overrides').notNull().default({}),
     // Set after the first policy version is created (circular FK avoided by
     // keeping this nullable and pointing at policy_versions.id).
@@ -321,6 +358,9 @@ export const policyVersions = pgTable(
     queueId: uuid('queue_id')
       .notNull()
       .references(() => queues.id),
+    templateId: uuid('template_id')
+      .notNull()
+      .references(() => policyTemplates.id),
     version: integer('version').notNull(),
     config: jsonb('config').notNull(),
     createdBy: text('created_by').references(() => user.id),
@@ -895,6 +935,7 @@ export const workspacesRelations = relations(workspaces, ({ many }) => ({
   members: many(workspaceMembers),
   projects: many(projects),
   invitations: many(invitations),
+  policyTemplates: many(policyTemplates),
 }));
 
 export const userRelations = relations(user, ({ many }) => ({
@@ -927,10 +968,34 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   }),
   queues: many(queues),
   apiKeys: many(apiKeys),
+  policyTemplates: many(policyTemplates),
+}));
+
+export const policyTemplatesRelations = relations(policyTemplates, ({ one, many }) => ({
+  workspace: one(workspaces, {
+    fields: [policyTemplates.workspaceId],
+    references: [workspaces.id],
+  }),
+  project: one(projects, {
+    fields: [policyTemplates.projectId],
+    references: [projects.id],
+  }),
+  parent: one(policyTemplates, {
+    fields: [policyTemplates.parentTemplateId],
+    references: [policyTemplates.id],
+    relationName: 'templateParent',
+  }),
+  children: many(policyTemplates, { relationName: 'templateParent' }),
+  queues: many(queues),
+  policyVersions: many(policyVersions),
 }));
 
 export const queuesRelations = relations(queues, ({ one, many }) => ({
   project: one(projects, { fields: [queues.projectId], references: [projects.id] }),
+  template: one(policyTemplates, {
+    fields: [queues.templateId],
+    references: [policyTemplates.id],
+  }),
   policyVersions: many(policyVersions),
   criteria: many(criteria),
   requests: many(reviewRequests),
@@ -1082,6 +1147,7 @@ export type ActivityLog = typeof activityLogs.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type Queue = typeof queues.$inferSelect;
+export type PolicyTemplate = typeof policyTemplates.$inferSelect;
 export type PolicyVersion = typeof policyVersions.$inferSelect;
 export type Criterion = typeof criteria.$inferSelect;
 export type ReviewRequest = typeof reviewRequests.$inferSelect;

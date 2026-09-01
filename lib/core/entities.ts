@@ -1,7 +1,7 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import { projects, queues } from '@/lib/db/schema';
 import { ApiProblem } from './requests';
-import { publishQueuePolicy } from './policy-store';
+import { ensureProjectTemplate, ensureWorkspaceTemplate, publishQueuePolicy } from './policy-store';
 import { slugFromName, isValidSlug } from './slugs';
 import type { Db, DbOrTx } from './eventlog';
 
@@ -147,6 +147,10 @@ export async function createQueue(
     if (existing) slugCollision('queue');
 
     try {
+      const wsTemplate = await ensureWorkspaceTemplate(tx, project.workspaceId);
+      const projectTemplate = await ensureProjectTemplate(tx, input.projectId, {
+        parentTemplateId: wsTemplate.id,
+      });
       const made: Array<{ id: string; environment: 'production' | 'test' }> = [];
       for (const environment of ['production', 'test'] as const) {
         const [row] = await tx
@@ -156,6 +160,7 @@ export async function createQueue(
             name,
             slug,
             environment,
+            templateId: projectTemplate.id,
           })
           .returning();
         const published = await publishQueuePolicy(tx, row.id, input.userId);

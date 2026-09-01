@@ -63,19 +63,103 @@ export type PolicyConfig = z.infer<typeof policyConfigSchema>;
 
 export const DEFAULT_POLICY: PolicyConfig = policyConfigSchema.parse({});
 
+export const POLICY_KEYS = [
+  'rankingRules',
+  'advancementMode',
+  'roundBudget',
+  'blindN',
+  'leaseMinutes',
+  'slaMinutes',
+  'slaFailMode',
+  'stickyRegenerations',
+  'judgeEnabled',
+  'judgeSamplingPct',
+  'judgeBlindSamplingPct',
+  'judgeModelId',
+  'judgeBaseUrl',
+  'judgeKeyEnv',
+  'judgeMinScore',
+  'judgeBindings',
+  'piiDetection',
+] as const satisfies ReadonlyArray<keyof PolicyConfig>;
+
+export type PolicyKey = (typeof POLICY_KEYS)[number];
+
 export function parsePolicyConfig(raw: unknown): PolicyConfig {
   return policyConfigSchema.parse(raw);
 }
 
-/** Workspace-level defaults that projects/queues inherit (subset of policy). */
-export const workspaceDefaultsSchema = policyConfigSchema.partial();
-export type WorkspaceDefaults = z.infer<typeof workspaceDefaultsSchema>;
+/** Partial overlay — templates and queue overrides store only keys they set. */
+export const policyPartialSchema = policyConfigSchema.partial();
+export type PolicyPartial = z.infer<typeof policyPartialSchema>;
 
-export function resolvePolicy(
-  workspaceDefaults: unknown,
-  queueConfig: unknown
-): PolicyConfig {
-  const ws = workspaceDefaultsSchema.parse(workspaceDefaults ?? {});
-  const q = policyConfigSchema.partial().parse(queueConfig ?? {});
-  return policyConfigSchema.parse({ ...DEFAULT_POLICY, ...ws, ...q });
+/** @deprecated Use policyPartialSchema. Kept so existing callers compile. */
+export const workspaceDefaultsSchema = policyPartialSchema;
+export type WorkspaceDefaults = PolicyPartial;
+
+export const DEFAULT_TEMPLATE_SLUG = 'default';
+export const DEFAULT_TEMPLATE_NAME = 'Default';
+export const VOBO_DEFAULTS_NAME = 'Vobo defaults';
+
+export interface PolicyLayer {
+  /** Display name used in "inherited from X". */
+  name: string;
+  config: Record<string, unknown>;
+}
+
+function layerSets(layer: PolicyLayer, key: PolicyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(layer.config, key) && layer.config[key] !== undefined;
+}
+
+/**
+ * Effective-setting source on every entity page (ARD §47.2 / §57.4).
+ * `layers` run ancestor → here; the last entry is the current entity.
+ * Returns exactly "overridden here" or "inherited from X".
+ */
+export function effectiveSettingSource(key: PolicyKey, layers: PolicyLayer[]): string {
+  if (layers.length === 0) return `inherited from ${VOBO_DEFAULTS_NAME}`;
+  const here = layers[layers.length - 1];
+  if (layerSets(here, key)) return 'overridden here';
+  for (let i = layers.length - 2; i >= 0; i--) {
+    if (layerSets(layers[i], key)) return `inherited from ${layers[i].name}`;
+  }
+  return `inherited from ${VOBO_DEFAULTS_NAME}`;
+}
+
+export function effectiveSettingSources(layers: PolicyLayer[]): Record<PolicyKey, string> {
+  const out = {} as Record<PolicyKey, string>;
+  for (const key of POLICY_KEYS) out[key] = effectiveSettingSource(key, layers);
+  return out;
+}
+
+/**
+ * Merge DEFAULT_POLICY ← each overlay (left to right). Overlays are partial.
+ * Typical chain: workspace template → project template → queue overrides.
+ */
+export function resolvePolicy(...overlays: unknown[]): PolicyConfig {
+  let acc: Record<string, unknown> = { ...DEFAULT_POLICY };
+  for (const raw of overlays) {
+    const parsed = policyPartialSchema.parse(raw ?? {});
+    acc = { ...acc, ...parsed };
+  }
+  return policyConfigSchema.parse(acc);
+}
+
+/** Stamp carried on signed events: live instance vs named template are distinct fields. */
+export interface PolicyVersionStamp {
+  policy_version_id: string;
+  policy_version: number;
+  policy_template_id: string;
+}
+
+export function policyVersionStamp(pv: {
+  id: string;
+  version: number;
+  templateId: string;
+}): PolicyVersionStamp {
+  return {
+    policy_version_id: pv.id,
+    policy_version: pv.version,
+    policy_template_id: pv.templateId,
+  };
 }

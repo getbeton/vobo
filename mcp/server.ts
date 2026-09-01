@@ -45,7 +45,11 @@ server.tool(
   'request_review',
   'Submit an artifact for human review (first generation). Idempotent on request_id — a repeat call never duplicates. Fire-and-forget: poll with list_reviews/get_review for the verdict.',
   {
-    queue: z.string().describe('Queue slug, e.g. pico-cold-email'),
+    template: z.string().optional().describe('Named policy template slug, e.g. default'),
+    queue: z
+      .string()
+      .optional()
+      .describe('Queue slug when more than one queue instantiates the template'),
     request_id: z
       .string()
       .describe('Customer-owned deterministic id, e.g. pico/<campaign>/<domain>/<contact>/<seq>'),

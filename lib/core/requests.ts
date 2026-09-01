@@ -16,7 +16,8 @@ import { appendEvent, DbOrTx, Db } from './eventlog';
 import { applyConfirmation } from '@/lib/anchoring/classify';
 import { classifyFor } from '@/lib/modality/selectors';
 import { DEFAULT_MODALITY } from '@/lib/modality/types';
-import { parsePolicyConfig, PolicyConfig } from './policy';
+import { DEFAULT_TEMPLATE_SLUG, parsePolicyConfig, PolicyConfig } from './policy';
+import { resolveQueueForTemplateSupply, stampForPolicyVersion } from './policy-store';
 import { getStorage } from '@/lib/storage';
 import { enqueueJudgeRun } from '@/lib/judge/enqueue';
 import { isAwaitingVersion, REOPEN_EVENT_TYPE } from './pull-contract';
@@ -129,7 +130,9 @@ export async function classifyLiveOntoVersion(
 
 export interface CreateReviewInput {
   projectId: string;
-  queueSlug: string;
+  queueSlug?: string;
+  /** Named policy template slug. Defaults to the project's Default template. */
+  templateSlug?: string;
   environment?: 'production' | 'test';
   customerRequestId: string;
   title: string;
@@ -224,14 +227,12 @@ export async function createReview(db: Db, input: CreateReviewInput) {
       throw new ApiProblem(409, 'project_archived', 'Project is archived');
     }
 
-    const queue = await tx.query.queues.findFirst({
-      where: and(
-        eq(queues.projectId, input.projectId),
-        eq(queues.slug, input.queueSlug),
-        eq(queues.environment, input.environment ?? 'production')
-      ),
+    const { queue } = await resolveQueueForTemplateSupply(tx, {
+      projectId: input.projectId,
+      templateSlug: input.templateSlug ?? DEFAULT_TEMPLATE_SLUG,
+      queueSlug: input.queueSlug,
+      environment: input.environment,
     });
-    if (!queue) throw new ApiProblem(404, 'queue_not_found', `Queue ${input.queueSlug} (${input.environment ?? 'production'}) not found in project`);
     if (queue.archivedAt) throw new ApiProblem(409, 'queue_archived', 'Queue is archived');
     if (!queue.openForReview) throw new ApiProblem(409, 'queue_closed', 'Queue is not open for review');
     assertModalityMatch(queue.modality, artifactModalityOf(input));
@@ -239,6 +240,7 @@ export async function createReview(db: Db, input: CreateReviewInput) {
       throw new ApiProblem(500, 'queue_unconfigured', 'Queue has no active policy version');
 
     const policy = await getPolicyForRequest(tx, queue.activePolicyVersionId);
+    const stamp = await stampForPolicyVersion(tx, queue.activePolicyVersionId);
     const slaDueAt = policy.slaMinutes
       ? new Date(Date.now() + policy.slaMinutes * 60_000)
       : null;
@@ -280,7 +282,7 @@ export async function createReview(db: Db, input: CreateReviewInput) {
       customer_request_id: request.customerRequestId,
       queue: queue.slug,
       environment: queue.environment,
-      policy_version_id: request.policyVersionId,
+      ...stamp,
       title: request.title,
     });
     await appendEvent(tx, request.id, 'version.submitted', {
