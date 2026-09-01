@@ -13,7 +13,9 @@ import {
   versionResponses,
 } from '@/lib/db/schema';
 import { appendEvent, DbOrTx, Db } from './eventlog';
-import { classify, applyConfirmation } from '@/lib/anchoring/classify';
+import { applyConfirmation } from '@/lib/anchoring/classify';
+import { classifyFor } from '@/lib/modality/selectors';
+import { DEFAULT_MODALITY } from '@/lib/modality/types';
 import { parsePolicyConfig, PolicyConfig } from './policy';
 import { getStorage } from '@/lib/storage';
 import { enqueueJudgeRun } from '@/lib/judge/enqueue';
@@ -34,6 +36,20 @@ export class ApiProblem extends Error {
   }
 }
 
+function artifactModalityOf(input: { modality?: string }): string {
+  return input.modality ?? DEFAULT_MODALITY;
+}
+
+function assertModalityMatch(queueModality: string, artifactModality: string) {
+  if (queueModality !== artifactModality) {
+    throw new ApiProblem(
+      409,
+      'modality_mismatch',
+      `Artifact modality '${artifactModality}' does not match queue modality '${queueModality}'`
+    );
+  }
+}
+
 /** Artifacts above this size classify asynchronously (decision 2A guard). */
 export const SYNC_CLASSIFY_LIMIT = 500 * 1024;
 
@@ -50,6 +66,14 @@ export async function classifyLiveOntoVersion(
   const counters = { resolved: 0, persisting: 0, orphaned: 0 };
   if (input.nextContentMd.length > SYNC_CLASSIFY_LIMIT) return counters;
 
+  const request = await tx.query.reviewRequests.findFirst({
+    where: eq(reviewRequests.id, input.requestId),
+  });
+  const queue = request
+    ? await tx.query.queues.findFirst({ where: eq(queues.id, request.queueId) })
+    : null;
+  const modality = queue?.modality ?? DEFAULT_MODALITY;
+
   const live = await tx
     .select()
     .from(annotations)
@@ -57,7 +81,8 @@ export async function classifyLiveOntoVersion(
 
   for (const ann of live) {
     const computed = applyConfirmation(
-      classify(
+      classifyFor(
+        modality,
         {
           quote: ann.quote,
           prefix: ann.prefix,
@@ -109,6 +134,8 @@ export interface CreateReviewInput {
   customerRequestId: string;
   title: string;
   contentMd: string;
+  /** Declared artifact modality. Defaults to text (content_md). */
+  modality?: string;
   prompt?: string;
   source?: string;
   priority?: number;
@@ -207,6 +234,7 @@ export async function createReview(db: Db, input: CreateReviewInput) {
     if (!queue) throw new ApiProblem(404, 'queue_not_found', `Queue ${input.queueSlug} (${input.environment ?? 'production'}) not found in project`);
     if (queue.archivedAt) throw new ApiProblem(409, 'queue_archived', 'Queue is archived');
     if (!queue.openForReview) throw new ApiProblem(409, 'queue_closed', 'Queue is not open for review');
+    assertModalityMatch(queue.modality, artifactModalityOf(input));
     if (!queue.activePolicyVersionId)
       throw new ApiProblem(500, 'queue_unconfigured', 'Queue has no active policy version');
 
@@ -281,6 +309,8 @@ export interface SubmitVersionInput {
   projectId: string;
   customerRequestId: string;
   contentMd: string;
+  /** Declared artifact modality. Defaults to text (content_md). */
+  modality?: string;
   authorLabel?: string;
   /** Per-finding responses, e.g. "needs clarification" (ARD §9). */
   responses?: Array<{ annotationId: string; note: string }>;
@@ -335,6 +365,10 @@ export async function submitVersion(db: Db, input: SubmitVersionInput) {
         'not_awaiting_version',
         `Request status is ${request.status}; a new version can only follow a rejection or a reopen`
       );
+
+    const queue = await tx.query.queues.findFirst({ where: eq(queues.id, request.queueId) });
+    if (!queue) throw new ApiProblem(500, 'queue_not_found', 'Queue missing for request');
+    assertModalityMatch(queue.modality, artifactModalityOf(input));
 
     const nextNumber = request.round + 1;
 
