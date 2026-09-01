@@ -7,8 +7,7 @@ import {
   reviewRequests,
 } from '@/lib/db/schema';
 import { appendEvent, Db, DbOrTx } from './eventlog';
-import { ApiProblem, classifyLiveOntoVersion } from './requests';
-import { contentHash } from './events';
+import { ApiProblem, classifyLiveOntoVersion, insertCommittedVersion } from './requests';
 import { applyManualEdits, shiftMarks, type ManualEditOp } from './manual-edits';
 import { enqueueJudgeRun } from '@/lib/judge/enqueue';
 
@@ -261,19 +260,15 @@ export async function saveManualEdits(db: Db, input: { requestId: string; userId
     if (!content.trim())
       throw new ApiProblem(422, 'empty_artifact', 'Edited artifact is empty');
     const nextNumber = request.round + 1;
-    const hash = contentHash(content);
-    const [human] = await tx
-      .insert(artifactVersions)
-      .values({
-        requestId: request.id,
-        versionNumber: nextNumber,
-        authorKind: 'human',
-        authorLabel: 'human edit',
-        contentMd: content,
-        contentHash: hash,
-        humanAuthored: true,
-      })
-      .returning();
+    const human = await insertCommittedVersion(tx, {
+      requestId: request.id,
+      versionNumber: nextNumber,
+      authorKind: 'human',
+      authorLabel: 'human edit',
+      contentMd: content,
+      humanAuthored: true,
+    });
+    const hash = human.contentHash;
     await tx
       .update(reviewRequests)
       .set({ round: nextNumber, updatedAt: new Date() })

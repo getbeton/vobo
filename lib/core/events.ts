@@ -8,6 +8,11 @@ import { createHash, createHmac, timingSafeEqual } from 'crypto';
 
 export const GENESIS_HASH = '0'.repeat(64);
 
+/** Explicit erasure of a commitment-key scope (ARD §22.3). */
+export const ERASURE_EVENT = 'scope.erased';
+/** Routine retention expiry — bodies gone, keys kept (ARD §25.7). */
+export const EXPIRY_EVENT = 'retention.expired';
+
 /** Deterministic JSON: object keys sorted recursively, arrays in order. */
 export function stableStringify(value: unknown): string {
   if (value === null || typeof value !== 'object') {

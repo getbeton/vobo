@@ -12,8 +12,7 @@ import {
   machineFindings,
 } from '@/lib/db/schema';
 import { appendEvent, Db, DbOrTx } from './eventlog';
-import { ApiProblem, getPolicyForRequest } from './requests';
-import { contentHash } from './events';
+import { ApiProblem, getPolicyForRequest, insertCommittedVersion } from './requests';
 import { untriagedFindings } from '@/lib/findings/read';
 import { listEdits, workingContentMd, rejectDecisionCount } from './suggestions';
 
@@ -288,21 +287,16 @@ export async function ship(db: Db, input: ShipInput) {
     let acceptedVersionNumber = chosenVersion.versionNumber;
     if (input.kind === 'approve_edited') {
       const edited = input.editedContentMd!;
-      const hHash = contentHash(edited);
-      const [human] = await tx
-        .insert(artifactVersions)
-        .values({
-          requestId: request.id,
-          versionNumber: request.round + 1,
-          authorKind: 'human',
-          authorLabel: 'human edit',
-          contentMd: edited,
-          contentHash: hHash,
-          humanAuthored: true,
-        })
-        .returning();
+      const human = await insertCommittedVersion(tx, {
+        requestId: request.id,
+        versionNumber: request.round + 1,
+        authorKind: 'human',
+        authorLabel: 'human edit',
+        contentMd: edited,
+        humanAuthored: true,
+      });
       sealedVersionId = human.id;
-      sealedHash = hHash;
+      sealedHash = human.contentHash;
       acceptedVersionNumber = human.versionNumber;
     }
 

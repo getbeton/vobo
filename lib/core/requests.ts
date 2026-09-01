@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { and, eq, isNull } from 'drizzle-orm';
 import {
   reviewRequests,
@@ -7,16 +8,21 @@ import {
   requestTags,
   queues,
   projects,
+  workspaces,
   policyVersions,
   versionResponses,
 } from '@/lib/db/schema';
-import { contentHash } from './events';
 import { appendEvent, DbOrTx, Db } from './eventlog';
 import { classify, applyConfirmation } from '@/lib/anchoring/classify';
 import { parsePolicyConfig, PolicyConfig } from './policy';
 import { getStorage } from '@/lib/storage';
 import { enqueueJudgeRun } from '@/lib/judge/enqueue';
 import { isAwaitingVersion, REOPEN_EVENT_TYPE } from './pull-contract';
+import {
+  MARKDOWN_BODY_PATH,
+  commitContent,
+  deriveCommitmentKey,
+} from './commitment';
 
 export class ApiProblem extends Error {
   constructor(
@@ -120,6 +126,52 @@ export async function getPolicyForRequest(dbh: DbOrTx, policyVersionId: string):
   return parsePolicyConfig(pv.config);
 }
 
+export async function workspaceRootForRequest(tx: DbOrTx, requestId: string) {
+  const [row] = await tx
+    .select({ id: workspaces.id, rootKey: workspaces.rootKey })
+    .from(reviewRequests)
+    .innerJoin(projects, eq(projects.id, reviewRequests.projectId))
+    .innerJoin(workspaces, eq(workspaces.id, projects.workspaceId))
+    .where(eq(reviewRequests.id, requestId))
+    .limit(1);
+  if (!row) throw new ApiProblem(404, 'request_not_found', 'Request not found');
+  return row;
+}
+
+export async function insertCommittedVersion(
+  tx: DbOrTx,
+  values: {
+    requestId: string;
+    versionNumber: number;
+    contentMd: string;
+    authorKind?: 'model' | 'human';
+    authorLabel?: string | null;
+    humanAuthored?: boolean;
+    filePath?: string;
+  }
+) {
+  const id = randomUUID();
+  const { rootKey } = await workspaceRootForRequest(tx, values.requestId);
+  const filePath = values.filePath ?? MARKDOWN_BODY_PATH;
+  const commitmentKey = deriveCommitmentKey(rootKey, id, filePath);
+  const contentHash = commitContent(commitmentKey, values.contentMd);
+  const [version] = await tx
+    .insert(artifactVersions)
+    .values({
+      id,
+      requestId: values.requestId,
+      versionNumber: values.versionNumber,
+      authorKind: values.authorKind ?? 'model',
+      authorLabel: values.authorLabel,
+      contentMd: values.contentMd,
+      contentHash,
+      commitmentKey,
+      humanAuthored: values.humanAuthored ?? false,
+    })
+    .returning();
+  return version;
+}
+
 /**
  * `create review` — first-generation method. Idempotent upsert on
  * (project, customer request id): an existing request returns unchanged
@@ -180,18 +232,14 @@ export async function createReview(db: Db, input: CreateReviewInput) {
       })
       .returning();
 
-    const hash = contentHash(input.contentMd);
-    const [version] = await tx
-      .insert(artifactVersions)
-      .values({
-        requestId: request.id,
-        versionNumber: 1,
-        authorKind: 'model',
-        authorLabel: input.authorLabel ?? 'model run',
-        contentMd: input.contentMd,
-        contentHash: hash,
-      })
-      .returning();
+    const version = await insertCommittedVersion(tx, {
+      requestId: request.id,
+      versionNumber: 1,
+      authorKind: 'model',
+      authorLabel: input.authorLabel ?? 'model run',
+      contentMd: input.contentMd,
+    });
+    const hash = version.contentHash;
 
     if (input.tags?.length) {
       await tx
@@ -265,16 +313,16 @@ export async function submitVersion(db: Db, input: SubmitVersionInput) {
         'Unknown request id — submit version never implicitly creates (two-method contract)'
       );
 
-    const hash = contentHash(input.contentMd);
-
     // Idempotency first: a crashed-and-retried consumer resends the content
     // that already landed as the latest version — no-op regardless of the
-    // status the request has since moved to (ARD §9).
+    // status the request has since moved to (ARD §9). Compare bodies, not
+    // commitments: each version has its own key, so the same text does not
+    // produce the same digest.
     const latest = await tx.query.artifactVersions.findFirst({
       where: eq(artifactVersions.requestId, request.id),
       orderBy: (v, { desc }) => [desc(v.versionNumber)],
     });
-    if (latest && latest.contentHash === hash && latest.versionNumber === request.round) {
+    if (latest && latest.contentMd === input.contentMd && latest.versionNumber === request.round) {
       return { request, version: latest, created: false as const, classifications: null };
     }
 
@@ -297,7 +345,7 @@ export async function submitVersion(db: Db, input: SubmitVersionInput) {
       ),
     });
     if (dupe) {
-      if (dupe.contentHash === hash) {
+      if (dupe.contentMd === input.contentMd) {
         return { request, version: dupe, created: false as const, classifications: null };
       }
       throw new ApiProblem(
@@ -315,17 +363,14 @@ export async function submitVersion(db: Db, input: SubmitVersionInput) {
     });
     if (!prevVersion) throw new ApiProblem(500, 'version_missing', 'Previous version missing');
 
-    const [version] = await tx
-      .insert(artifactVersions)
-      .values({
-        requestId: request.id,
-        versionNumber: nextNumber,
-        authorKind: 'model',
-        authorLabel: input.authorLabel ?? 'model run',
-        contentMd: input.contentMd,
-        contentHash: hash,
-      })
-      .returning();
+    const version = await insertCommittedVersion(tx, {
+      requestId: request.id,
+      versionNumber: nextNumber,
+      authorKind: 'model',
+      authorLabel: input.authorLabel ?? 'model run',
+      contentMd: input.contentMd,
+    });
+    const hash = version.contentHash;
 
     const oversized = input.contentMd.length > SYNC_CLASSIFY_LIMIT;
     const counters = await classifyLiveOntoVersion(tx, {

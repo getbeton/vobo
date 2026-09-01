@@ -15,6 +15,7 @@ import {
   index,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
+import { randomBytes } from 'crypto';
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -185,6 +186,10 @@ export const workspaces = pgTable('workspaces', {
   // Policy defaults inherited by projects/queues (zod-validated JSON; the one
   // deliberate settings column — see ARD §4 / Argilla pattern).
   policyDefaults: jsonb('policy_defaults').notNull().default({}),
+  // HKDF IKM for per-artifact commitment keys. Never destroyed, never exported.
+  rootKey: varchar('root_key', { length: 64 })
+    .notNull()
+    .$defaultFn(() => randomBytes(32).toString('hex')),
   // Structural tenancy for training/grounding (ARD §33.2): a plan switch, not
   // a boolean flag. Enterprise and self-host cannot enter the training path.
   plan: workspacePlanEnum('plan').notNull().default('cloud_paid'),
@@ -428,7 +433,12 @@ export const artifactVersions = pgTable(
     authorKind: authorKindEnum('author_kind').notNull().default('model'),
     authorLabel: varchar('author_label', { length: 200 }), // e.g. "model run · support-gen-2"
     contentMd: text('content_md').notNull(), // markdown-only MVP
-    contentHash: varchar('content_hash', { length: 64 }).notNull(), // sha256 hex
+    // SHA-256(commitment_key || content). Not a bare content digest.
+    contentHash: varchar('content_hash', { length: 64 }).notNull(),
+    // Materialised HKDF(workspace_root, artifact_id || file_path). Null after erasure.
+    commitmentKey: varchar('commitment_key', { length: 64 }),
+    contentPurgedAt: timestamp('content_purged_at'),
+    keyDestroyedAt: timestamp('key_destroyed_at'),
     humanAuthored: boolean('human_authored').notNull().default(false),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
@@ -1083,7 +1093,10 @@ export type JudgeRecord = typeof judgeRecords.$inferSelect;
 export type ManualEdit = typeof manualEdits.$inferSelect;
 export type DismissalMemory = typeof dismissalMemory.$inferSelect;
 
-export type WorkspaceDataWithMembers = Workspace & {
+/** Workspace as returned to the app/client — the HKDF root is omitted. */
+export type PublicWorkspace = Omit<Workspace, 'rootKey'>;
+
+export type WorkspaceDataWithMembers = PublicWorkspace & {
   members: (WorkspaceMember & {
     user: Pick<User, 'id' | 'name' | 'email'>;
   })[];

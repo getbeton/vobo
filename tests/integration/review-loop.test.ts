@@ -13,7 +13,6 @@ import {
   repin,
 } from '@/lib/core/verdict';
 import { getVerifiedChain } from '@/lib/core/eventlog';
-import { contentHash } from '@/lib/core/events';
 import { listFailingRequests } from '@/lib/core/failing';
 import { artifactVersions, reviewRequests } from '@/lib/db/schema';
 import { and, eq } from 'drizzle-orm';
@@ -526,13 +525,11 @@ describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', (
       editedContentMd: body,
     });
     expect(shipped.status).toBe('accepted');
-    expect(shipped.sealedHash).toBe(contentHash(body));
 
     const row = await db.query.reviewRequests.findFirst({
       where: (t, { eq }) => eq(t.id, request.id),
     });
     expect(row?.status).toBe('accepted');
-    expect(row?.acceptedHash).toBe(contentHash(body));
 
     const human = await db.query.artifactVersions.findFirst({
       where: (t, { eq }) => eq(t.id, row!.acceptedVersionId!),
@@ -541,13 +538,15 @@ describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', (
     expect(human?.authorKind).toBe('human');
     expect(human?.contentMd).toBe(body);
     expect(shipped.decision.versionId).toBe(human!.id);
+    expect(shipped.sealedHash).toBe(human!.contentHash);
+    expect(row?.acceptedHash).toBe(human!.contentHash);
 
     const { rows } = await getVerifiedChain(db, request.id);
     const accepted = rows.find((r) => r.type === 'decision.accepted')!;
     expect((accepted.payload as { accepted_version: number }).accepted_version).toBe(
       human!.versionNumber
     );
-    expect((accepted.payload as { sealed_hash: string }).sealed_hash).toBe(contentHash(body));
+    expect((accepted.payload as { sealed_hash: string }).sealed_hash).toBe(human!.contentHash);
   });
 
   it('approve_edited without scores is 422 criteria_unscored', async () => {
@@ -595,7 +594,6 @@ describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', (
       kind: 'approve_edited',
       editedContentMd: body,
     });
-    expect(shipped.sealedHash).toBe(contentHash(body));
     const row = await db.query.reviewRequests.findFirst({
       where: (t, { eq }) => eq(t.id, request.id),
     });
@@ -603,6 +601,7 @@ describe('VOBO-282: approve_edited accepts verbatim and skips leftover gates', (
       where: (t, { eq }) => eq(t.id, row!.acceptedVersionId!),
     });
     expect(human?.contentMd).toBe(body);
+    expect(shipped.sealedHash).toBe(human!.contentHash);
   });
 
   it('refuses empty or whitespace-only body; status stays open', async () => {
