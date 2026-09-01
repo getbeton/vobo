@@ -1,5 +1,5 @@
 import { redirect } from 'next/navigation';
-import { and, asc, desc, eq, inArray } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import { Suspense } from 'react';
 import { db } from '@/lib/db/drizzle';
 import { getUser, currentMembership } from '@/lib/db/queries';
@@ -23,7 +23,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const projectRows = await db
     .select()
     .from(projects)
-    .where(eq(projects.workspaceId, membership.workspaceId))
+    .where(and(eq(projects.workspaceId, membership.workspaceId), isNull(projects.archivedAt)))
     .orderBy(asc(projects.createdAt), asc(projects.id));
   const projectIds = projectRows.map((p) => p.id);
 
@@ -31,7 +31,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     ? await db
         .select()
         .from(queues)
-        .where(inArray(queues.projectId, projectIds))
+        .where(and(inArray(queues.projectId, projectIds), isNull(queues.archivedAt)))
         .orderBy(asc(queues.createdAt), asc(queues.id))
     : [];
 

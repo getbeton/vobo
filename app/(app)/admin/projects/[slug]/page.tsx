@@ -1,18 +1,22 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
 import { getUser, currentMembership } from '@/lib/db/queries';
 import {
   workspaces,
-  workspaceMembers,
   projects,
   queues,
   reviewRequests,
 } from '@/lib/db/schema';
 import { computeMetrics, statStrip } from '@/lib/core/metrics';
 import { workspaceDefaultsSchema, DEFAULT_POLICY } from '@/lib/core/policy';
-import { StatStrip } from '@/components/admin/EntityBits';
+import {
+  createQueueAction,
+  renameProjectAction,
+  archiveProjectAction,
+} from '@/lib/actions/admin';
+import { StatStrip, CreateEntityForm, EntityActions } from '@/components/admin/EntityBits';
 
 export const dynamic = 'force-dynamic';
 
@@ -28,15 +32,24 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
   const membership = await currentMembership(me.id);
   if (!membership) redirect('/auth');
 
+  const isOperator = membership.role === 'operator' || membership.role === 'admin';
+
   const project = await db.query.projects.findFirst({
-    where: and(eq(projects.workspaceId, membership.workspaceId), eq(projects.slug, slug)),
+    where: and(
+      eq(projects.workspaceId, membership.workspaceId),
+      eq(projects.slug, slug),
+      isNull(projects.archivedAt)
+    ),
   });
   if (!project) notFound();
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, membership.workspaceId),
   });
 
-  const queueRows = await db.select().from(queues).where(eq(queues.projectId, project.id));
+  const queueRows = await db
+    .select()
+    .from(queues)
+    .where(and(eq(queues.projectId, project.id), isNull(queues.archivedAt)));
   const requests = await db
     .select({
       queueId: reviewRequests.queueId,
@@ -84,6 +97,14 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
             project
           </span>
           <div style={{ flex: 1 }} />
+          <EntityActions
+            canEdit={isOperator}
+            name={project.name}
+            onRename={(name) => renameProjectAction(project.id, name)}
+            onArchive={() => archiveProjectAction(project.id)}
+            archiveHref="/admin"
+            archiveNoun="project"
+          />
           <span style={{ fontSize: 12, color: 'var(--slate-500)' }}>You are {membership.role} here</span>
         </div>
 
@@ -163,9 +184,14 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
                   textAlign: 'center',
                 }}
               >
-                No queues in this project yet — the pipeline hasn’t registered any.
+                No queues in this project yet.
               </div>
             )}
+            <CreateEntityForm
+              noun="queue"
+              canEdit={isOperator}
+              submit={(name, slug) => createQueueAction(project.id, name, slug)}
+            />
           </div>
 
           <div

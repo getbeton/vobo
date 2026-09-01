@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { and, eq, gte, inArray } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
 import { getUser, currentMembership } from '@/lib/db/queries';
 import {
@@ -19,8 +19,9 @@ import {
   setMemberRoleAction,
   removeMemberAction,
   inviteMemberAction,
+  createProjectAction,
 } from '@/lib/actions/admin';
-import { StatStrip, SettingRow, MembersCard } from '@/components/admin/EntityBits';
+import { StatStrip, SettingRow, MembersCard, CreateEntityForm } from '@/components/admin/EntityBits';
 
 export const dynamic = 'force-dynamic';
 
@@ -65,7 +66,7 @@ export default async function WorkspacePage() {
   const projectRows = await db
     .select()
     .from(projects)
-    .where(eq(projects.workspaceId, ws.id));
+    .where(and(eq(projects.workspaceId, ws.id), isNull(projects.archivedAt)));
   const projectIds = projectRows.map((p) => p.id);
 
   const requests = projectIds.length
@@ -82,7 +83,7 @@ export default async function WorkspacePage() {
     ? await db
         .select({ id: queues.id, projectId: queues.projectId, slug: queues.slug })
         .from(queues)
-        .where(inArray(queues.projectId, projectIds))
+        .where(and(inArray(queues.projectId, projectIds), isNull(queues.archivedAt)))
     : [];
 
   const metrics = computeMetrics(requests);
@@ -250,6 +251,11 @@ export default async function WorkspacePage() {
                   No projects in this workspace yet.
                 </div>
               )}
+              <CreateEntityForm
+                noun="project"
+                canEdit={isOperator}
+                submit={(name, slug) => createProjectAction(ws.id, name, slug)}
+              />
             </div>
 
             <MembersCard
