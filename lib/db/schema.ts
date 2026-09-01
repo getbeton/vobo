@@ -64,6 +64,7 @@ export const requestStatusEnum = pgEnum('request_status', [
   'accepted',
   'rejected', // rejected and awaiting the next version
   'escalated',
+  'reopened', // accepted, then a late critical; awaiting_version + already_shipped
 ]);
 
 export const authorKindEnum = pgEnum('author_kind', ['model', 'human']);

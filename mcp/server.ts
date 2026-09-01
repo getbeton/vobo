@@ -63,7 +63,7 @@ server.tool(
 
 server.tool(
   'submit_version',
-  'Submit a regenerated version against the SAME request id (non-first generation). Only valid after a rejection; identical resubmissions are no-ops.',
+  'Submit a regenerated version against the SAME request id (non-first generation). Only valid when awaiting_version (rejected or reopened); identical resubmissions are no-ops.',
   {
     request_id: z.string(),
     content_md: z.string(),
@@ -77,11 +77,11 @@ server.tool(
 
 server.tool(
   'list_reviews',
-  'Pull work state. awaiting_version=true returns exactly the regeneration work list. changed_since takes an event-id cursor (see get_cursor); response includes max_event_id to advance it. Status is the review state, not the whole story: archived_at set means the request is off the board — do not treat it as in-flight and do not wait for a verdict. A changed_since delta includes archived rows so the cursor cannot stall on their events. accepted and escalated are terminal — never regenerate those requests.',
+  'Pull work state. Four states: accepted (terminal for the round, not the request — keep the cursor moving, it can reopen); reopened (treat as awaiting_version plus already_shipped — the artifact may be in production); open/claimed/held_blind (skip); awaiting_version (the work list: rejected and reopened). awaiting_version=true returns the regeneration work list and still surfaces a reopen. changed_since takes an event-id cursor (see get_cursor); response includes max_event_id to advance it. Status is the review state, not the whole story: archived_at set means the request is off the board — do not treat it as in-flight and do not wait for a verdict. A changed_since delta includes archived rows so the cursor cannot stall on their events. escalated is not awaiting_version — do not regenerate it.',
   {
     queue: z.string().optional(),
     environment: z.enum(['production', 'test']).optional(),
-    status: z.string().optional().describe('Comma-separated: open,claimed,rejected,accepted,escalated'),
+    status: z.string().optional().describe('Comma-separated: open,claimed,rejected,accepted,escalated,reopened'),
     awaiting_version: z.boolean().optional(),
     changed_since: z.number().int().optional(),
   },

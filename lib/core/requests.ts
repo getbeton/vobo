@@ -16,6 +16,7 @@ import { classify, applyConfirmation } from '@/lib/anchoring/classify';
 import { parsePolicyConfig, PolicyConfig } from './policy';
 import { getStorage } from '@/lib/storage';
 import { enqueueJudgeRun } from '@/lib/judge/enqueue';
+import { isAwaitingVersion, REOPEN_EVENT_TYPE } from './pull-contract';
 
 export class ApiProblem extends Error {
   constructor(
@@ -238,7 +239,8 @@ export interface SubmitVersionInput {
 }
 
 /**
- * `submit version` — non-first method. Stacks v(n+1) onto a rejected request.
+ * `submit version` — non-first method. Stacks v(n+1) onto a request that is
+ * awaiting a version (rejected or reopened).
  * Idempotency: an identical resubmission (same content hash for the expected
  * next version) is a no-op; a different content for an already-stacked
  * version number is a 409.
@@ -278,12 +280,12 @@ export async function submitVersion(db: Db, input: SubmitVersionInput) {
 
     if (request.archivedAt) throw new ApiProblem(409, 'archived', 'Request is archived');
     if (request.status === 'accepted')
-      throw new ApiProblem(409, 'already_accepted', 'Request is accepted — terminal');
-    if (request.status !== 'rejected')
+      throw new ApiProblem(409, 'already_accepted', 'Request is accepted — terminal for this round');
+    if (!isAwaitingVersion(request.status))
       throw new ApiProblem(
         409,
         'not_awaiting_version',
-        `Request status is ${request.status}; a new version can only follow a rejection`
+        `Request status is ${request.status}; a new version can only follow a rejection or a reopen`
       );
 
     const nextNumber = request.round + 1;
@@ -381,5 +383,72 @@ export async function submitVersion(db: Db, input: SubmitVersionInput) {
       where: eq(reviewRequests.id, request.id),
     });
     return { request: updated!, version, created: true as const, classifications: counters };
+  });
+}
+
+export interface LateFinding {
+  severity: 'critical' | 'minor';
+  id?: string;
+  criterion?: string;
+  note?: string;
+  evidence?: string;
+  producer?: string;
+}
+
+/**
+ * Late-critical reopen (ARD §38.4). Transitions accepted → reopened.
+ * The original decision.accepted event stands. The new event carries
+ * already_shipped so a consumer can branch. No new review_requests row —
+ * a reopen is a round inside the same billable unit (§25.1.2).
+ *
+ * The judge does not run in this tree; tests and a future producer call this.
+ */
+export async function reopenByLateFinding(
+  db: Db,
+  input: { requestId: string; finding: LateFinding }
+) {
+  return db.transaction(async (tx) => {
+    const [locked] = await tx
+      .select()
+      .from(reviewRequests)
+      .where(eq(reviewRequests.id, input.requestId))
+      .for('update');
+    if (!locked) throw new ApiProblem(404, 'request_not_found', 'Request not found');
+    if (locked.archivedAt) throw new ApiProblem(409, 'archived', 'Request is archived');
+    if (locked.status === 'reopened') {
+      return { request: locked, created: false as const };
+    }
+    if (locked.status !== 'accepted') {
+      throw new ApiProblem(
+        409,
+        'not_accepted',
+        `Request status is ${locked.status}; only an accepted request can reopen`
+      );
+    }
+    if (input.finding.severity !== 'critical') {
+      throw new ApiProblem(
+        422,
+        'not_critical',
+        'Only a critical late finding reopens an acceptance'
+      );
+    }
+
+    await tx
+      .update(reviewRequests)
+      .set({ status: 'reopened', updatedAt: new Date() })
+      .where(eq(reviewRequests.id, locked.id));
+
+    await appendEvent(tx, locked.id, REOPEN_EVENT_TYPE, {
+      already_shipped: true,
+      finding: input.finding,
+      from_status: 'accepted',
+      accepted_hash: locked.acceptedHash,
+      round: locked.round,
+    });
+
+    const updated = await tx.query.reviewRequests.findFirst({
+      where: eq(reviewRequests.id, locked.id),
+    });
+    return { request: updated!, created: true as const };
   });
 }
