@@ -71,6 +71,13 @@
       "when": 1788300000000,
       "tag": "0009_project_queue_archive",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1788400000000,
+      "tag": "0010_reopened_status",
+      "breakpoints": true
     }
   ]
 }

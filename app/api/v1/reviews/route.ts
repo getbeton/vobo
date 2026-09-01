@@ -4,6 +4,11 @@ import { db } from '@/lib/db/drizzle';
 import { reviewRequests, queues, events } from '@/lib/db/schema';
 import { authenticateApiKey, problemResponse } from '@/lib/core/apiauth';
 import { createReview } from '@/lib/core/requests';
+import {
+  alreadyShipped,
+  AWAITING_VERSION_STATUSES,
+  isAwaitingVersion,
+} from '@/lib/core/pull-contract';
 
 /**
  * Flat pipeline API (customer request ids contain slashes, so ids travel in
@@ -94,7 +99,7 @@ export async function GET(req: Request) {
       conditions.push(eq(reviewRequests.queueId, queue.id));
     }
     if (awaiting) {
-      conditions.push(eq(reviewRequests.status, 'rejected'));
+      conditions.push(inArray(reviewRequests.status, [...AWAITING_VERSION_STATUSES]));
     } else if (status) {
       conditions.push(
         inArray(
@@ -133,7 +138,8 @@ export async function GET(req: Request) {
         request_id: request.customerRequestId,
         id: request.id,
         status: request.status,
-        awaiting_version: request.status === 'rejected',
+        awaiting_version: isAwaitingVersion(request.status),
+        already_shipped: alreadyShipped(request.status),
         round: request.round,
         title: request.title,
         accepted_hash: request.acceptedHash,

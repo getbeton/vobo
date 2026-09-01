@@ -14,12 +14,16 @@ This document is the operator's view. The architecture rationale lives in
 ## The loop
 
 ```
-create review ──▶ [open] ──claim──▶ [claimed] ──verdict──▶ accepted   (terminal, hash-sealed)
+create review ──▶ [open] ──claim──▶ [claimed] ──verdict──▶ accepted   (terminal for the round)
                                                         ├─▶ rejected  (awaiting version)
                                                         └─▶ escalated (needs an operator)
-       ▲                                                     │
+       ▲                          ▲                          │
+       │                          └── reopened ◀── late critical
        └───────────────── submit version ────────────────────┘
 ```
+
+`accepted` is terminal for the round, not the request. A late critical finding
+reopens it (`reopened` = `awaiting_version` plus `already_shipped`). See `/integrate`.
 
 Two API methods, deliberately not one:
 
@@ -80,8 +84,9 @@ Three ways in, same contract:
 - **Webhooks** — Standard Webhooks signing, retry ladder 10s/60s/180s, then a dead-letter queue.
 
 Consumers with no server (a terminal agent) **pull**: `changed_since` takes an event-id cursor that
-Vobo stores per API key, and `awaiting_version` is a derived flag. The consumer keeps no local
-state, so two copies of the same agent on different machines cannot drift.
+Vobo stores per API key, and `awaiting_version` is a derived flag (`rejected` **and** `reopened`).
+The consumer keeps no local state, so two copies of the same agent on different machines cannot
+drift. `/integrate` teaches the four-state loop: accepted, reopened, in-flight, awaiting_version.
 
 ## Operating it
 

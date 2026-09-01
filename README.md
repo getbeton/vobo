@@ -29,9 +29,11 @@ flowchart TD
   claimed -->|verdict| rejected["rejected — awaiting version"]
   claimed -->|verdict| escalated["escalated"]
   rejected -->|submit version| open
+  accepted -->|late critical| reopened["reopened — awaiting version, already shipped"]
+  reopened -->|submit version| open
 ```
 
-`create review` is an idempotent upsert on the caller's request id. `submit version` never creates a request. `accepted` is terminal: do not regenerate it.
+`create review` is an idempotent upsert on the caller's request id. `submit version` never creates a request. `accepted` is terminal for the round, not the request: a late critical reopens it. `/integrate` teaches the four-state pull contract.
 
 ## Get started
 
@@ -85,7 +87,7 @@ Same contract on every path. Ids belong to the caller and must be deterministic.
 | **MCP** `request_review`, `submit_version`, `list_reviews`, `get_review`, `get_corrections`, `get_cursor`, `set_cursor` | An agent in a terminal. Full-loop parity with HTTP |
 | **Webhooks** Standard Webhooks signing, retry 10s / 60s / 180s, then DLQ | You have a server that can receive events |
 
-A consumer with no server **pulls**. `changed_since` takes an event-id cursor that Vobo stores per API key. `awaiting_version` is the regeneration work list. Two copies of the same agent cannot drift: there is no local cursor.
+A consumer with no server **pulls**. `changed_since` takes an event-id cursor that Vobo stores per API key. `awaiting_version` is the regeneration work list (`rejected` and `reopened`). Two copies of the same agent cannot drift: there is no local cursor. The four states live on [`/integrate`](./app/integrate/page.tsx).
 
 Point the MCP server at an instance:
 

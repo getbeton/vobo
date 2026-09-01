@@ -4,6 +4,7 @@ import { reviewRequests, artifactVersions } from '@/lib/db/schema';
 import { authenticateApiKey, problemResponse } from '@/lib/core/apiauth';
 import { ApiProblem } from '@/lib/core/requests';
 import { getVerifiedChain } from '@/lib/core/eventlog';
+import { alreadyShipped, isAwaitingVersion } from '@/lib/core/pull-contract';
 
 /** GET /api/v1/review?request_id=… — full request state for a consumer. */
 export async function GET(req: Request) {
@@ -41,7 +42,8 @@ export async function GET(req: Request) {
       request_id: request.customerRequestId,
       id: request.id,
       status: request.status,
-      awaiting_version: request.status === 'rejected',
+      awaiting_version: isAwaitingVersion(request.status),
+      already_shipped: alreadyShipped(request.status),
       round: request.round,
       title: request.title,
       accepted_hash: request.acceptedHash,
