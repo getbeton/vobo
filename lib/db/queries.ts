@@ -55,6 +55,15 @@ export async function getWorkspaceForUser() {
     where: eq(workspaceMembers.userId, user.id),
     with: {
       workspace: {
+        columns: {
+          id: true,
+          name: true,
+          slug: true,
+          policyDefaults: true,
+          plan: true,
+          createdAt: true,
+          updatedAt: true,
+        },
         with: {
           members: {
             with: {
