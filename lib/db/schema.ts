@@ -242,6 +242,9 @@ export const projects = pgTable(
     name: varchar('name', { length: 100 }).notNull(),
     slug: varchar('slug', { length: 64 }).notNull(),
     createdAt: timestamp('created_at').notNull().defaultNow(),
+    // Soft hide. The row stays so the slug remains unique and create-review
+    // can name `project_archived`. Nothing is hard-deleted.
+    archivedAt: timestamp('archived_at'),
   },
   (t) => [uniqueIndex('projects_ws_slug_uq').on(t.workspaceId, t.slug)]
 );
@@ -285,6 +288,9 @@ export const queues = pgTable(
     // keeping this nullable and pointing at policy_versions.id).
     activePolicyVersionId: uuid('active_policy_version_id'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
+    // Soft hide of both environment rows of a slug. create-review names
+    // `queue_archived`. Slug uniqueness still covers archived rows.
+    archivedAt: timestamp('archived_at'),
   },
   (t) => [uniqueIndex('queues_project_slug_env_uq').on(t.projectId, t.slug, t.environment)]
 );

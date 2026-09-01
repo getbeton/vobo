@@ -6,6 +6,7 @@ import {
   anchorStates,
   requestTags,
   queues,
+  projects,
   policyVersions,
   versionResponses,
 } from '@/lib/db/schema';
@@ -135,6 +136,14 @@ export async function createReview(db: Db, input: CreateReviewInput) {
       return { request: existing, created: false as const };
     }
 
+    const project = await tx.query.projects.findFirst({
+      where: eq(projects.id, input.projectId),
+    });
+    if (!project) throw new ApiProblem(404, 'project_not_found', 'Project not found');
+    if (project.archivedAt) {
+      throw new ApiProblem(409, 'project_archived', 'Project is archived');
+    }
+
     const queue = await tx.query.queues.findFirst({
       where: and(
         eq(queues.projectId, input.projectId),
@@ -143,6 +152,7 @@ export async function createReview(db: Db, input: CreateReviewInput) {
       ),
     });
     if (!queue) throw new ApiProblem(404, 'queue_not_found', `Queue ${input.queueSlug} (${input.environment ?? 'production'}) not found in project`);
+    if (queue.archivedAt) throw new ApiProblem(409, 'queue_archived', 'Queue is archived');
     if (!queue.openForReview) throw new ApiProblem(409, 'queue_closed', 'Queue is not open for review');
     if (!queue.activePolicyVersionId)
       throw new ApiProblem(500, 'queue_unconfigured', 'Queue has no active policy version');

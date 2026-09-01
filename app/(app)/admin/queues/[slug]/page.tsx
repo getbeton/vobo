@@ -1,11 +1,16 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import {
+  setQueueSlugOverrideAction,
+  renameQueueAction,
+  archiveQueueAction,
+} from '@/lib/actions/admin';
+import { SettingRow, EntityActions } from '@/components/admin/EntityBits';
 import { db } from '@/lib/db/drizzle';
 import { getUser, currentMembership } from '@/lib/db/queries';
 import {
   workspaces,
-  workspaceMembers,
   projects,
   queues,
   criteria,
@@ -14,8 +19,6 @@ import {
 import { computeMetrics } from '@/lib/core/metrics';
 import { workspaceDefaultsSchema, DEFAULT_POLICY } from '@/lib/core/policy';
 import { resolveQueuePolicy } from '@/lib/core/policy-store';
-import { setQueueSlugOverrideAction } from '@/lib/actions/admin';
-import { SettingRow } from '@/components/admin/EntityBits';
 
 export const dynamic = 'force-dynamic';
 
@@ -43,7 +46,9 @@ export default async function QueueAdminPage({
   const projectRows = await db
     .select()
     .from(projects)
-    .where(eq(projects.workspaceId, membership.workspaceId));
+    .where(
+      and(eq(projects.workspaceId, membership.workspaceId), isNull(projects.archivedAt))
+    );
   const project = sp.project
     ? projectRows.find((p) => p.slug === sp.project)
     : projectRows[0];
@@ -52,7 +57,9 @@ export default async function QueueAdminPage({
   const envRows = await db
     .select()
     .from(queues)
-    .where(and(eq(queues.projectId, project.id), eq(queues.slug, slug)))
+    .where(
+      and(eq(queues.projectId, project.id), eq(queues.slug, slug), isNull(queues.archivedAt))
+    )
     .orderBy(asc(queues.environment));
   if (envRows.length === 0) notFound();
 
@@ -111,6 +118,14 @@ export default async function QueueAdminPage({
             queue
           </span>
           <div style={{ flex: 1 }} />
+          <EntityActions
+            canEdit={isOperator}
+            name={production.name}
+            onRename={(name) => renameQueueAction(project.id, slug, name)}
+            onArchive={() => archiveQueueAction(project.id, slug)}
+            archiveHref={`/admin/projects/${project.slug}`}
+            archiveNoun="queue"
+          />
           <span style={{ fontSize: 12, color: 'var(--slate-500)' }}>You are {membership.role} here</span>
         </div>
 
