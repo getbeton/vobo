@@ -324,6 +324,7 @@ export default async function WorkspacePage() {
               <span style={{ fontSize: 13, fontWeight: 600 }}>Workspace defaults</span>
               <SettingRow
                 label="SLA policy"
+                source="overridden here"
                 value={slaLabel}
                 canEdit={isOperator}
                 apply={applyDefaults}
@@ -337,6 +338,7 @@ export default async function WorkspacePage() {
               />
               <SettingRow
                 label="Round budget"
+                source="overridden here"
                 value={`${budget} rounds`}
                 canEdit={isOperator}
                 apply={applyDefaults}
@@ -348,6 +350,7 @@ export default async function WorkspacePage() {
               />
               <SettingRow
                 label="Blind-N review"
+                source="overridden here"
                 value={blindN ? `blind-${blindN} by default` : 'off by default'}
                 canEdit={isOperator}
                 apply={applyDefaults}

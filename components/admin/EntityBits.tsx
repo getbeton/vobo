@@ -87,6 +87,7 @@ export interface DropdownItem {
 export function SettingRow({
   label,
   value,
+  source,
   canEdit,
   items,
   apply,
@@ -94,6 +95,8 @@ export function SettingRow({
 }: {
   label: string;
   value: string;
+  /** "inherited from X" / "overridden here" — required on entity policy rows. */
+  source?: string;
   canEdit: boolean;
   items?: DropdownItem[];
   apply?: (patch: Record<string, unknown>) => Promise<ActionResult>;
@@ -115,6 +118,9 @@ export function SettingRow({
     >
       <span style={{ flex: 1, fontSize: 13, color: 'var(--slate-700)' }}>
         {label}
+        {source && (
+          <span style={{ display: 'block', fontSize: 11, color: 'var(--slate-400)' }}>{source}</span>
+        )}
         {err && (
           <span style={{ display: 'block', fontSize: 11, color: 'var(--red-600)' }}>{err}</span>
         )}
@@ -656,5 +662,58 @@ export function EntityActions({
       )}
       {err && <span style={{ fontSize: 11, color: 'var(--red-600)' }}>{err}</span>}
     </span>
+  );
+}
+
+export function NewTemplateForm({
+  create,
+}: {
+  create: (name: string) => Promise<ActionResult>;
+}) {
+  const [name, setName] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+  return (
+    <div style={{ display: 'flex', gap: 8, paddingTop: 8 }}>
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="New template name"
+        style={{
+          flex: 1,
+          border: '1px solid var(--input)',
+          borderRadius: 6,
+          padding: '6px 10px',
+          fontSize: 13,
+          fontFamily: 'inherit',
+          outline: 'none',
+        }}
+      />
+      <button
+        type="button"
+        disabled={!name.trim() || pending}
+        onClick={() => {
+          setErr(null);
+          start(async () => {
+            const res = await create(name.trim());
+            if (res.ok) setName('');
+            else setErr(res.error);
+          });
+        }}
+        style={{
+          fontSize: 12,
+          fontWeight: 500,
+          borderRadius: 8,
+          padding: '6px 12px',
+          border: 'none',
+          background: name.trim() ? 'var(--blue-600)' : 'var(--slate-200)',
+          color: name.trim() ? '#fff' : 'var(--slate-500)',
+          cursor: name.trim() ? 'pointer' : 'not-allowed',
+        }}
+      >
+        Create template
+      </button>
+      {err && <span style={{ fontSize: 11, color: 'var(--red-600)' }}>{err}</span>}
+    </div>
   );
 }
