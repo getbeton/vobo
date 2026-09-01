@@ -150,6 +150,7 @@ export default async function ReviewPage({
         roundBudget: policy?.roundBudget ?? 3,
         budgetExhausted: Boolean(request.budgetExhaustedAt),
         rejectCount: await rejectDecisionCount(db, request.id),
+        modality: queue?.modality ?? 'text',
       }}
       contentMd={version.contentMd}
       previousContentMd={previous?.contentMd ?? null}

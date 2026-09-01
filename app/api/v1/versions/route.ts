@@ -8,6 +8,7 @@ import { submitVersion } from '@/lib/core/requests';
 const schema = z.object({
   request_id: z.string().min(1).max(255),
   content_md: z.string().min(1),
+  modality: z.enum(['text', 'code', 'table', 'image']).optional(),
   author_label: z.string().max(200).optional(),
   responses: z
     .array(z.object({ annotation_id: z.string().uuid(), note: z.string().min(1) }))
@@ -22,6 +23,7 @@ export async function POST(req: Request) {
       projectId: principal.projectId,
       customerRequestId: body.request_id,
       contentMd: body.content_md,
+      modality: body.modality,
       authorLabel: body.author_label,
       responses: body.responses?.map((r) => ({ annotationId: r.annotation_id, note: r.note })),
     });

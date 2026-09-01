@@ -29,7 +29,10 @@ import { RemainingWorkChip } from '@/components/queue/RemainingWorkChip';
 import { SuggestionList, type SuggestionData } from './SuggestionLayer';
 
 export type { SuggestionData };
-import { ArtifactPane, MarkedText, useSyncScroll, type CompareMark } from './ArtifactPane';
+import { MarkedText, useSyncScroll, type CompareMark } from './ArtifactPane';
+import { getRenderer } from '@/lib/modality/renderers';
+import { DEFAULT_MODALITY } from '@/lib/modality/types';
+import './register-text';
 import { FindingData, PriorFindingsList } from './PriorFindingsRail';
 
 /**
@@ -107,6 +110,7 @@ interface RequestData {
   budgetExhausted: boolean;
   /** Reject decisions already on the request. Last-round uses count, not version. */
   rejectCount: number;
+  modality?: string;
 }
 
 function queueRef(request: RequestData): QueueRef {
@@ -226,6 +230,7 @@ export function ReviewWorkspace({
 }) {
   const router = useRouter();
   const [, startTransition] = useTransition();
+  const { ReviewPane, ComparePane } = getRenderer(request.modality ?? DEFAULT_MODALITY);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
   const [srcOpen, setSrcOpen] = useState(false);
@@ -1589,26 +1594,26 @@ export function ReviewWorkspace({
                 }}
               >
                 <div style={paneHead}>Previous · round {request.round - 1}</div>
-                <ArtifactPane side="left" paneRef={leftRef} style={{ padding: '28px 40px 80px' }}>
+                <ComparePane side="left" paneRef={leftRef} style={{ padding: '28px 40px 80px' }}>
                   <MarkedText
                     content={previousContentMd ?? ''}
                     marks={previousMarks}
                     fontSize={15}
                     maxWidth={760}
                   />
-                </ArtifactPane>
+                </ComparePane>
               </div>
               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
                 <div style={paneHead}>Current · round {request.round}</div>
-                <ArtifactPane side="right" paneRef={artifactRef} onMouseUp={onCurrentMouseUp}>
+                <ReviewPane side="right" paneRef={artifactRef} onMouseUp={onCurrentMouseUp}>
                   {currentParagraphs}
-                </ArtifactPane>
+                </ReviewPane>
               </div>
             </>
           ) : (
-            <ArtifactPane paneRef={artifactRef} onMouseUp={onCurrentMouseUp}>
+            <ReviewPane paneRef={artifactRef} onMouseUp={onCurrentMouseUp}>
               {currentParagraphs}
-            </ArtifactPane>
+            </ReviewPane>
           )}
         </div>
 

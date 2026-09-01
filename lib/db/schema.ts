@@ -58,6 +58,15 @@ export const queueEnvironmentEnum = pgEnum('queue_environment', [
   'production',
 ]);
 
+// ARD §7 / §57.5: one modality per queue. Default `text` so existing rows
+// pick it up from the column default — no backfill.
+export const queueModalityEnum = pgEnum('queue_modality', [
+  'text',
+  'code',
+  'table',
+  'image',
+]);
+
 export const requestStatusEnum = pgEnum('request_status', [
   'open',
   'claimed',
@@ -285,6 +294,7 @@ export const queues = pgTable(
     name: varchar('name', { length: 100 }).notNull(),
     slug: varchar('slug', { length: 64 }).notNull(),
     environment: queueEnvironmentEnum('environment').notNull().default('production'),
+    modality: queueModalityEnum('modality').notNull().default('text'),
     openForReview: boolean('open_for_review').notNull().default(true),
     // Explicit per-queue overrides of workspace policy defaults. Only the keys
     // an operator has actually set live here; everything else inherits. The

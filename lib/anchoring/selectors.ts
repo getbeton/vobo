@@ -1,10 +1,13 @@
 import search from 'approx-string-match';
 
 /**
- * W3C-style dual anchor: TextQuoteSelector (quote + prefix + suffix) and
- * TextPositionSelector (start + end) over the markdown source string.
- * Quote+context is the durable half; position is the fast path and tiebreak.
- * (ARD §8; approach ported from the Hypothesis client's anchoring module.)
+ * W3C-style dual anchor for the **text** modality: TextQuoteSelector
+ * (quote + prefix + suffix) and TextPositionSelector (start + end) over the
+ * markdown source string. Quote+context is the durable half; position is the
+ * fast path and tiebreak. (ARD §8; Hypothesis client's anchoring module.)
+ *
+ * This is not the universal selector shape. Other modalities register their
+ * own engines via `registerSelector` in `lib/modality/selectors.ts`.
  */
 export interface Selector {
   quote: string;
@@ -13,6 +16,9 @@ export interface Selector {
   startPos: number;
   endPos: number;
 }
+
+/** Alias making the text-only contract explicit at the type level. */
+export type TextSelector = Selector;
 
 export interface AnchorMatch {
   start: number;
