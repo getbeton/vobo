@@ -129,6 +129,7 @@ const sectionHead: React.CSSProperties = {
 
 const kbdSolid: React.CSSProperties = {
   fontSize: 11,
+  fontFamily: 'var(--font-mono)',
   background: 'rgba(255,255,255,.22)',
   borderRadius: 5,
   padding: '1px 6px',
