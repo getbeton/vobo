@@ -55,14 +55,16 @@ const chip: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
   gap: 6,
+  height: 32,
   border: '1px solid var(--border)',
-  borderRadius: 8,
-  padding: '6px 10px',
-  fontSize: 13,
+  borderRadius: 6,
+  padding: '0 12px',
+  fontSize: 14,
   fontWeight: 500,
+  lineHeight: 1,
   background: '#fff',
   cursor: 'pointer',
-  color: 'var(--slate-600)',
+  color: 'var(--slate-700)',
 };
 
 function CrumbMenu({

@@ -71,7 +71,7 @@ export function Login({
             ))}
           </ul>
         </div>
-        <p className="text-xs uppercase tracking-wide text-white/50">Apache 2.0 · cloud or self-host</p>
+        <p className="font-mono text-xs text-white/50">Apache 2.0 · cloud or self-host</p>
       </section>
 
       <section className="flex items-center justify-center bg-gray-50 px-5 py-12">
@@ -79,7 +79,7 @@ export function Login({
           <div className="mb-6 flex justify-center text-slate-950 lg:hidden">
             <Logo height={24} />
           </div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">
+          <p className="text-sm font-semibold text-muted-foreground">
             {mode === 'signup' ? 'Create account' : 'Sign in'}
           </p>
           <h1 className="mb-5 mt-2 text-3xl font-bold text-slate-950">
