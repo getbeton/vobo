@@ -27,7 +27,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`bg-white text-foreground ${inter.variable} ${GeistMono.variable} ${inter.className}`}
+      className={`bg-background text-foreground ${inter.variable} ${GeistMono.variable} ${inter.className}`}
     >
       <body className="min-h-[100dvh] bg-background">
         <SWRConfig

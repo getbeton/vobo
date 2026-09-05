@@ -5,7 +5,6 @@
 @custom-variant dark (&:is(.dark *));
 @variant dark (&:is(.dark *));
 
-/* Map Tailwind tokens onto Beton Council (hex), not the leftover saas-starter HSL. */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -57,11 +56,12 @@
   }
 }
 
-/* Council ds-btn shipped at h-10. Vanilla shadcn default is h-9. */
-.ds-btn {
+.ds-btn:where(:not(.ds-btn--sm):not(.ds-btn--lg):not(.ds-btn--icon):not(.ds-btn--link)) {
   height: 2.25rem;
   padding: 0 1rem;
   font-size: 0.875rem;
 }
 .ds-btn--sm { height: 2rem; padding: 0 0.75rem; }
 .ds-btn--lg { height: 2.5rem; padding: 0 1.5rem; }
+.ds-btn--icon { height: 2.25rem; width: 2.25rem; padding: 0; }
+.ds-btn--link { height: auto; padding: 0; }
