@@ -71,7 +71,7 @@ export function Login({
             ))}
           </ul>
         </div>
-        <p className="font-mono text-xs text-white/50">Apache 2.0 · cloud or self-host</p>
+        <p className="text-xs text-white/50">Apache 2.0 · cloud or self-host</p>
       </section>
 
       <section className="flex items-center justify-center bg-gray-50 px-5 py-12">
