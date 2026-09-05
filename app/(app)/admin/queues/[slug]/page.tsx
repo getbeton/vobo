@@ -121,8 +121,8 @@ export default async function QueueAdminPage({
           <EntityActions
             canEdit={isOperator}
             name={production.name}
-            onRename={(name) => renameQueueAction(project.id, slug, name)}
-            onArchive={() => archiveQueueAction(project.id, slug)}
+            onRename={renameQueueAction.bind(null, project.id, slug)}
+            onArchive={archiveQueueAction.bind(null, project.id, slug)}
             archiveHref={`/admin/projects/${project.slug}`}
             archiveNoun="queue"
           />

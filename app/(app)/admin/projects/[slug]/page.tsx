@@ -100,8 +100,8 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
           <EntityActions
             canEdit={isOperator}
             name={project.name}
-            onRename={(name) => renameProjectAction(project.id, name)}
-            onArchive={() => archiveProjectAction(project.id)}
+            onRename={renameProjectAction.bind(null, project.id)}
+            onArchive={archiveProjectAction.bind(null, project.id)}
             archiveHref="/admin"
             archiveNoun="project"
           />
@@ -188,7 +188,7 @@ export default async function ProjectPage({ params }: { params: Promise<{ slug: 
             <CreateEntityForm
               noun="queue"
               canEdit={isOperator}
-              submit={(name, slug) => createQueueAction(project.id, name, slug)}
+              submit={createQueueAction.bind(null, project.id)}
             />
           </div>
 

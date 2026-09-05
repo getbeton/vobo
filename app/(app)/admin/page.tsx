@@ -252,7 +252,7 @@ export default async function WorkspacePage() {
               <CreateEntityForm
                 noun="project"
                 canEdit={isOperator}
-                submit={(name, slug) => createProjectAction(ws.id, name, slug)}
+                submit={createProjectAction.bind(null, ws.id)}
               />
             </div>
 

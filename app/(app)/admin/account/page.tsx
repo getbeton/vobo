@@ -2,6 +2,8 @@
 
 import { useActionState } from 'react';
 import { deleteAccount, updatePassword } from '@/app/(login)/actions';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 
 const card: React.CSSProperties = {
   background: '#fff',
@@ -20,14 +22,6 @@ const labelStyle: React.CSSProperties = {
   fontWeight: 500,
   color: 'var(--slate-700)',
   marginBottom: 4,
-};
-
-const inputStyle: React.CSSProperties = {
-  width: '100%',
-  border: '1px solid var(--border)',
-  borderRadius: 8,
-  padding: '8px 10px',
-  fontSize: 14,
 };
 
 type PasswordState = {
@@ -64,7 +58,7 @@ export default function AccountPage() {
           <form action={passwordAction} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <label>
               <span style={labelStyle}>Current password</span>
-              <input
+              <Input
                 name="currentPassword"
                 type="password"
                 autoComplete="current-password"
@@ -72,12 +66,11 @@ export default function AccountPage() {
                 minLength={8}
                 maxLength={100}
                 defaultValue={passwordState.currentPassword}
-                style={inputStyle}
               />
             </label>
             <label>
               <span style={labelStyle}>New password</span>
-              <input
+              <Input
                 name="newPassword"
                 type="password"
                 autoComplete="new-password"
@@ -85,12 +78,11 @@ export default function AccountPage() {
                 minLength={8}
                 maxLength={100}
                 defaultValue={passwordState.newPassword}
-                style={inputStyle}
               />
             </label>
             <label>
               <span style={labelStyle}>Confirm new password</span>
-              <input
+              <Input
                 name="confirmPassword"
                 type="password"
                 autoComplete="new-password"
@@ -98,7 +90,6 @@ export default function AccountPage() {
                 minLength={8}
                 maxLength={100}
                 defaultValue={passwordState.confirmPassword}
-                style={inputStyle}
               />
             </label>
             {passwordState.error ? (
@@ -111,23 +102,9 @@ export default function AccountPage() {
                 {passwordState.success}
               </p>
             ) : null}
-            <button
-              type="submit"
-              disabled={passwordPending}
-              style={{
-                alignSelf: 'flex-start',
-                border: 0,
-                borderRadius: 8,
-                padding: '8px 14px',
-                background: 'var(--slate-900)',
-                color: '#fff',
-                fontSize: 13,
-                fontWeight: 500,
-                cursor: 'pointer',
-              }}
-            >
+            <Button type="submit" disabled={passwordPending} className="self-start">
               {passwordPending ? 'Saving' : 'Update password'}
-            </button>
+            </Button>
           </form>
         </div>
 
@@ -139,7 +116,7 @@ export default function AccountPage() {
           <form action={deleteAction} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <label>
               <span style={labelStyle}>Password</span>
-              <input
+              <Input
                 name="password"
                 type="password"
                 autoComplete="current-password"
@@ -147,7 +124,6 @@ export default function AccountPage() {
                 minLength={8}
                 maxLength={100}
                 defaultValue={deleteState.password}
-                style={inputStyle}
               />
             </label>
             {deleteState.error ? (
@@ -155,23 +131,9 @@ export default function AccountPage() {
                 {deleteState.error}
               </p>
             ) : null}
-            <button
-              type="submit"
-              disabled={deletePending}
-              style={{
-                alignSelf: 'flex-start',
-                border: 0,
-                borderRadius: 8,
-                padding: '8px 14px',
-                background: 'var(--red-700)',
-                color: '#fff',
-                fontSize: 13,
-                fontWeight: 500,
-                cursor: 'pointer',
-              }}
-            >
+            <Button type="submit" variant="destructive" disabled={deletePending} className="self-start">
               {deletePending ? 'Deleting' : 'Delete account'}
-            </button>
+            </Button>
           </form>
         </div>
       </div>
