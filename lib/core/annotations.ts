@@ -7,6 +7,8 @@ import {
 } from '@/lib/db/schema';
 import { appendEvent, Db } from './eventlog';
 import { ApiProblem } from './requests';
+import { markCorrectionResolved } from './verdict';
+import { workingContentMd } from './suggestions';
 
 const CONTEXT = 32;
 
@@ -34,7 +36,7 @@ export async function addComment(db: Db, input: AddCommentInput) {
       ),
     });
     if (!version) throw new ApiProblem(500, 'version_missing', 'Current version missing');
-    const content = version.contentMd;
+    const content = await workingContentMd(tx, request.id, version);
     if (
       input.startPos < 0 ||
       input.endPos > content.length ||
@@ -122,10 +124,25 @@ export async function editComment(
 
 /** Resolve unblocks approve; it does NOT ship (design decision, prototype). */
 export async function resolveComment(db: Db, requestId: string, annotationId: string, userId: string) {
-  await db
-    .update(annotations)
-    .set({ resolvedAt: new Date(), resolvedBy: userId })
-    .where(and(eq(annotations.id, annotationId), eq(annotations.requestId, requestId)));
+  return db.transaction(async (tx) => {
+    const request = await tx.query.reviewRequests.findFirst({
+      where: eq(reviewRequests.id, requestId),
+    });
+    if (!request) throw new ApiProblem(404, 'request_not_found', 'Request not found');
+    const version = await tx.query.artifactVersions.findFirst({
+      where: and(
+        eq(artifactVersions.requestId, requestId),
+        eq(artifactVersions.versionNumber, request.round)
+      ),
+    });
+    if (!version) throw new ApiProblem(500, 'version_missing', 'Current version missing');
+    await markCorrectionResolved(tx, {
+      requestId,
+      annotationId,
+      versionId: version.id,
+      userId,
+    });
+  });
 }
 
 export async function setCriterionVerdict(

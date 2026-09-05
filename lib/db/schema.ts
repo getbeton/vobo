@@ -13,8 +13,10 @@ import {
   real,
   uniqueIndex,
   index,
+  foreignKey,
 } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
+import { randomBytes } from 'crypto';
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -57,6 +59,15 @@ export const queueEnvironmentEnum = pgEnum('queue_environment', [
   'production',
 ]);
 
+// ARD §7 / §57.5: one modality per queue. Default `text` so existing rows
+// pick it up from the column default — no backfill.
+export const queueModalityEnum = pgEnum('queue_modality', [
+  'text',
+  'code',
+  'table',
+  'image',
+]);
+
 export const requestStatusEnum = pgEnum('request_status', [
   'open',
   'claimed',
@@ -64,9 +75,16 @@ export const requestStatusEnum = pgEnum('request_status', [
   'accepted',
   'rejected', // rejected and awaiting the next version
   'escalated',
+  'reopened', // accepted, then a late critical; awaiting_version + already_shipped
 ]);
 
 export const authorKindEnum = pgEnum('author_kind', ['model', 'human']);
+
+export const manualEditStatusEnum = pgEnum('manual_edit_status', [
+  'pending',
+  'applied',
+  'rejected',
+]);
 
 export const anchorStateEnum = pgEnum('anchor_state', [
   'new', // born this round
@@ -178,6 +196,10 @@ export const workspaces = pgTable('workspaces', {
   // Policy defaults inherited by projects/queues (zod-validated JSON; the one
   // deliberate settings column — see ARD §4 / Argilla pattern).
   policyDefaults: jsonb('policy_defaults').notNull().default({}),
+  // HKDF IKM for per-artifact commitment keys. Never destroyed, never exported.
+  rootKey: varchar('root_key', { length: 64 })
+    .notNull()
+    .$defaultFn(() => randomBytes(32).toString('hex')),
   // Structural tenancy for training/grounding (ARD §33.2): a plan switch, not
   // a boolean flag. Enterprise and self-host cannot enter the training path.
   plan: workspacePlanEnum('plan').notNull().default('cloud_paid'),
@@ -236,6 +258,9 @@ export const projects = pgTable(
     name: varchar('name', { length: 100 }).notNull(),
     slug: varchar('slug', { length: 64 }).notNull(),
     createdAt: timestamp('created_at').notNull().defaultNow(),
+    // Soft hide. The row stays so the slug remains unique and create-review
+    // can name `project_archived`. Nothing is hard-deleted.
+    archivedAt: timestamp('archived_at'),
   },
   (t) => [uniqueIndex('projects_ws_slug_uq').on(t.workspaceId, t.slug)]
 );
@@ -257,8 +282,42 @@ export const apiKeys = pgTable('api_keys', {
 });
 
 // ---------------------------------------------------------------------------
-// Queues, policy versions, criteria
+// Policy templates, queues, policy versions, criteria
 // ---------------------------------------------------------------------------
+
+// Named templates at workspace (projectId null) or project level. A queue
+// instantiates exactly one into a singular live Policy (policy_versions).
+export const policyTemplates = pgTable(
+  'policy_templates',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: integer('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+    projectId: uuid('project_id').references(() => projects.id),
+    parentTemplateId: uuid('parent_template_id'),
+    name: varchar('name', { length: 100 }).notNull(),
+    slug: varchar('slug', { length: 64 }).notNull(),
+    config: jsonb('config').notNull().default({}),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('policy_templates_ws_slug_uq')
+      .on(t.workspaceId, t.slug)
+      .where(sql`${t.projectId} is null`),
+    uniqueIndex('policy_templates_project_slug_uq')
+      .on(t.projectId, t.slug)
+      .where(sql`${t.projectId} is not null`),
+    index('policy_templates_workspace_idx').on(t.workspaceId),
+    index('policy_templates_project_idx').on(t.projectId),
+    foreignKey({
+      columns: [t.parentTemplateId],
+      foreignColumns: [t.id],
+      name: 'policy_templates_parent_id_policy_templates_id_fk',
+    }),
+  ]
+);
 
 export const queues = pgTable(
   'queues',
@@ -270,15 +329,21 @@ export const queues = pgTable(
     name: varchar('name', { length: 100 }).notNull(),
     slug: varchar('slug', { length: 64 }).notNull(),
     environment: queueEnvironmentEnum('environment').notNull().default('production'),
+    modality: queueModalityEnum('modality').notNull().default('text'),
     openForReview: boolean('open_for_review').notNull().default(true),
-    // Explicit per-queue overrides of workspace policy defaults. Only the keys
-    // an operator has actually set live here; everything else inherits. The
-    // resolved snapshot is what gets frozen into a policy_versions row.
+    templateId: uuid('template_id')
+      .notNull()
+      .references(() => policyTemplates.id),
+    // Explicit per-queue overrides of the instantiated template. Only keys an
+    // operator has actually set live here; everything else inherits.
     policyOverrides: jsonb('policy_overrides').notNull().default({}),
     // Set after the first policy version is created (circular FK avoided by
     // keeping this nullable and pointing at policy_versions.id).
     activePolicyVersionId: uuid('active_policy_version_id'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
+    // Soft hide of both environment rows of a slug. create-review names
+    // `queue_archived`. Slug uniqueness still covers archived rows.
+    archivedAt: timestamp('archived_at'),
   },
   (t) => [uniqueIndex('queues_project_slug_env_uq').on(t.projectId, t.slug, t.environment)]
 );
@@ -293,6 +358,9 @@ export const policyVersions = pgTable(
     queueId: uuid('queue_id')
       .notNull()
       .references(() => queues.id),
+    templateId: uuid('template_id')
+      .notNull()
+      .references(() => policyTemplates.id),
     version: integer('version').notNull(),
     config: jsonb('config').notNull(),
     createdBy: text('created_by').references(() => user.id),
@@ -356,9 +424,9 @@ export const reviewRequests = pgTable(
     // pull. Nothing is ever hard-deleted — versions and events reference it.
     archivedAt: timestamp('archived_at'),
     archivedBy: text('archived_by').references(() => user.id),
-    // Set when a reject ships at round >= policy.roundBudget. The reject still
-    // happened (status is rejected); this flag is the extra signal for the
-    // operator failing-requests page. Not a status value — same reason as archive.
+    // Set when the Nth reject (policy.roundBudget) ships. Status becomes
+    // escalated so the pipeline does not regenerate. Approve still closes it.
+    // The flag feeds the operator failing-requests page.
     budgetExhaustedAt: timestamp('budget_exhausted_at'),
     budgetExhaustedBy: text('budget_exhausted_by').references(() => user.id),
     // Routing-confidence signal from the latest completed judge run. Never a
@@ -415,7 +483,12 @@ export const artifactVersions = pgTable(
     authorKind: authorKindEnum('author_kind').notNull().default('model'),
     authorLabel: varchar('author_label', { length: 200 }), // e.g. "model run · support-gen-2"
     contentMd: text('content_md').notNull(), // markdown-only MVP
-    contentHash: varchar('content_hash', { length: 64 }).notNull(), // sha256 hex
+    // SHA-256(commitment_key || content). Not a bare content digest.
+    contentHash: varchar('content_hash', { length: 64 }).notNull(),
+    // Materialised HKDF(workspace_root, artifact_id || file_path). Null after erasure.
+    commitmentKey: varchar('commitment_key', { length: 64 }),
+    contentPurgedAt: timestamp('content_purged_at'),
+    keyDestroyedAt: timestamp('key_destroyed_at'),
     humanAuthored: boolean('human_authored').notNull().default(false),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
@@ -478,6 +551,34 @@ export const annotations = pgTable(
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (t) => [index('annotations_request_idx').on(t.requestId)]
+);
+
+/**
+ * Suggestion rows on a version. Pending = old text still shown. Applied =
+ * folded into working text. Save writes one human version from applied rows.
+ */
+export const manualEdits = pgTable(
+  'manual_edits',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => reviewRequests.id),
+    baseVersionId: uuid('base_version_id')
+      .notNull()
+      .references(() => artifactVersions.id),
+    startPos: integer('start_pos').notNull(),
+    endPos: integer('end_pos').notNull(),
+    originalQuote: text('original_quote').notNull(),
+    replacement: text('replacement').notNull(),
+    status: manualEditStatusEnum('status').notNull().default('pending'),
+    createdBy: text('created_by')
+      .notNull()
+      .references(() => user.id),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    decidedAt: timestamp('decided_at'),
+  },
+  (t) => [index('manual_edits_request_status_idx').on(t.requestId, t.status)]
 );
 
 // Classification of every prior annotation against every later version.
@@ -777,6 +878,8 @@ export const judgeRuns = pgTable(
     lastAttemptAt: timestamp('last_attempt_at'),
     startedAt: timestamp('started_at'),
     completedAt: timestamp('completed_at'),
+    /** Increments on each reviewer rerun so ingest keys stay unique per attempt. */
+    rerunSeq: integer('rerun_seq').notNull().default(0),
     createdAt: timestamp('created_at').notNull().defaultNow(),
   },
   (t) => [uniqueIndex('judge_runs_version_uq').on(t.versionId)]
@@ -832,6 +935,7 @@ export const workspacesRelations = relations(workspaces, ({ many }) => ({
   members: many(workspaceMembers),
   projects: many(projects),
   invitations: many(invitations),
+  policyTemplates: many(policyTemplates),
 }));
 
 export const userRelations = relations(user, ({ many }) => ({
@@ -864,10 +968,34 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
   }),
   queues: many(queues),
   apiKeys: many(apiKeys),
+  policyTemplates: many(policyTemplates),
+}));
+
+export const policyTemplatesRelations = relations(policyTemplates, ({ one, many }) => ({
+  workspace: one(workspaces, {
+    fields: [policyTemplates.workspaceId],
+    references: [workspaces.id],
+  }),
+  project: one(projects, {
+    fields: [policyTemplates.projectId],
+    references: [projects.id],
+  }),
+  parent: one(policyTemplates, {
+    fields: [policyTemplates.parentTemplateId],
+    references: [policyTemplates.id],
+    relationName: 'templateParent',
+  }),
+  children: many(policyTemplates, { relationName: 'templateParent' }),
+  queues: many(queues),
+  policyVersions: many(policyVersions),
 }));
 
 export const queuesRelations = relations(queues, ({ one, many }) => ({
   project: one(projects, { fields: [queues.projectId], references: [projects.id] }),
+  template: one(policyTemplates, {
+    fields: [queues.templateId],
+    references: [policyTemplates.id],
+  }),
   policyVersions: many(policyVersions),
   criteria: many(criteria),
   requests: many(reviewRequests),
@@ -1019,6 +1147,7 @@ export type ActivityLog = typeof activityLogs.$inferSelect;
 export type Project = typeof projects.$inferSelect;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type Queue = typeof queues.$inferSelect;
+export type PolicyTemplate = typeof policyTemplates.$inferSelect;
 export type PolicyVersion = typeof policyVersions.$inferSelect;
 export type Criterion = typeof criteria.$inferSelect;
 export type ReviewRequest = typeof reviewRequests.$inferSelect;
@@ -1037,9 +1166,13 @@ export type ProducerKey = typeof producerKeys.$inferSelect;
 export type MachineFinding = typeof machineFindings.$inferSelect;
 export type JudgeRun = typeof judgeRuns.$inferSelect;
 export type JudgeRecord = typeof judgeRecords.$inferSelect;
+export type ManualEdit = typeof manualEdits.$inferSelect;
 export type DismissalMemory = typeof dismissalMemory.$inferSelect;
 
-export type WorkspaceDataWithMembers = Workspace & {
+/** Workspace as returned to the app/client — the HKDF root is omitted. */
+export type PublicWorkspace = Omit<Workspace, 'rootKey'>;
+
+export type WorkspaceDataWithMembers = PublicWorkspace & {
   members: (WorkspaceMember & {
     user: Pick<User, 'id' | 'name' | 'email'>;
   })[];

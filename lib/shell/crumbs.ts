@@ -51,6 +51,58 @@ function href(sel: CrumbSelection): string {
   return `/queue?${q.toString()}`;
 }
 
+/** Project, queue and environment of a request. Enough to build leave-links. */
+export interface QueueRef {
+  projectSlug: string;
+  queueSlug: string;
+  environment: Environment;
+}
+
+/** The list of this request's queue. Never bare `/queue`. */
+export function queueListHref(ref: QueueRef): string {
+  return href({
+    projectSlug: ref.projectSlug,
+    queueSlug: ref.queueSlug,
+    environment: ref.environment,
+  });
+}
+
+export function reviewHref(requestId: string, ref: QueueRef): string {
+  const q = new URLSearchParams();
+  q.set('project', ref.projectSlug);
+  q.set('queue', ref.queueSlug);
+  q.set('env', ref.environment);
+  return `/review/${requestId}?${q.toString()}`;
+}
+
+/**
+ * Fill missing project/queue/env from the request. Drop leftover l/r from
+ * old compare bookmarks. `changed` means the review page should redirect.
+ */
+export function mergeReviewSearch(
+  current: {
+    project?: string | null;
+    queue?: string | null;
+    env?: string | null;
+    l?: string | null;
+    r?: string | null;
+  },
+  ref: QueueRef
+): { search: string; changed: boolean } {
+  const envKnown = current.env === 'test' || current.env === 'production';
+  const project = current.project || ref.projectSlug;
+  const queue = current.queue || ref.queueSlug;
+  const environment: Environment =
+    current.env === 'test' ? 'test' : envKnown ? 'production' : ref.environment;
+  const q = new URLSearchParams();
+  q.set('project', project);
+  q.set('queue', queue);
+  q.set('env', environment);
+  const leftoverPair = Boolean(current.l || current.r);
+  const changed = !current.project || !current.queue || !envKnown || leftoverPair;
+  return { search: q.toString(), changed };
+}
+
 /**
  * Switching project keeps the queue slug when that slug exists in the new
  * project, and otherwise falls to that project's first queue. Keeping a slug

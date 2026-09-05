@@ -1,8 +1,11 @@
 import './globals.css';
 import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
+import { GeistMono } from 'geist/font/mono';
+import { Suspense } from 'react';
 import { getUser, getWorkspaceForUser } from '@/lib/db/queries';
 import { SWRConfig } from 'swr';
+import { AnalyticsTracker } from '@/components/analytics/AnalyticsProvider';
 
 export const metadata: Metadata = {
   title: 'Vobo',
@@ -14,7 +17,7 @@ export const viewport: Viewport = {
   maximumScale: 1,
 };
 
-const inter = Inter({ subsets: ['latin'] });
+const inter = Inter({ subsets: ['latin'], variable: '--font-inter' });
 
 export default function RootLayout({
   children,
@@ -24,9 +27,9 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`bg-white dark:bg-gray-950 text-black dark:text-white ${inter.className}`}
+      className={`bg-background text-foreground ${inter.variable} ${GeistMono.variable} ${inter.className}`}
     >
-      <body className="min-h-[100dvh] bg-gray-50">
+      <body className="min-h-[100dvh] bg-background">
         <SWRConfig
           value={{
             fallback: {
@@ -36,6 +39,9 @@ export default function RootLayout({
             },
           }}
         >
+          <Suspense fallback={null}>
+            <AnalyticsTracker />
+          </Suspense>
           {children}
         </SWRConfig>
       </body>

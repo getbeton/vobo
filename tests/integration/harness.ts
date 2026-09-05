@@ -11,7 +11,8 @@ import {
   criteria,
   apiKeys,
 } from '@/lib/db/schema';
-import { DEFAULT_POLICY, PolicyConfig } from '@/lib/core/policy';
+import { DEFAULT_POLICY, DEFAULT_TEMPLATE_SLUG, PolicyConfig } from '@/lib/core/policy';
+import { ensureProjectTemplate, ensureWorkspaceTemplate } from '@/lib/core/policy-store';
 import { createHash, randomBytes } from 'crypto';
 
 let migrated = false;
@@ -42,6 +43,9 @@ export interface Fixtures {
   queueId: string;
   testQueueId: string;
   policyVersionId: string;
+  workspaceTemplateId: string;
+  projectTemplateId: string;
+  templateSlug: string;
   criterionIds: string[];
   apiToken: string;
 }
@@ -68,15 +72,27 @@ export async function createFixtures(policyOverrides: Partial<PolicyConfig> = {}
     .values({ workspaceId: ws.id, name: 'Test Project', slug: 'test' })
     .returning();
 
+  const wsTemplate = await ensureWorkspaceTemplate(db, ws.id);
+  const projectTemplate = await ensureProjectTemplate(db, project.id, {
+    parentTemplateId: wsTemplate.id,
+  });
+
   const mk = async (environment: 'production' | 'test') => {
     const [queue] = await db
       .insert(queues)
-      .values({ projectId: project.id, name: 'q', slug: 'q', environment })
+      .values({
+        projectId: project.id,
+        name: 'q',
+        slug: 'q',
+        environment,
+        templateId: projectTemplate.id,
+      })
       .returning();
     const [pv] = await db
       .insert(policyVersions)
       .values({
         queueId: queue.id,
+        templateId: projectTemplate.id,
         version: 1,
         config: { ...DEFAULT_POLICY, ...policyOverrides },
         createdBy: userId,
@@ -112,6 +128,9 @@ export async function createFixtures(policyOverrides: Partial<PolicyConfig> = {}
     queueId: prod.queue.id,
     testQueueId: test.queue.id,
     policyVersionId: prod.pv.id,
+    workspaceTemplateId: wsTemplate.id,
+    projectTemplateId: projectTemplate.id,
+    templateSlug: DEFAULT_TEMPLATE_SLUG,
     criterionIds: crits.map((c) => c.id),
     apiToken: token,
   };
@@ -134,17 +153,33 @@ export async function addProject(
     .insert(projects)
     .values({ workspaceId, name: slug, slug })
     .returning();
+  const wsTemplate = await ensureWorkspaceTemplate(db, workspaceId);
+  const projectTemplate = await ensureProjectTemplate(db, project.id, {
+    parentTemplateId: wsTemplate.id,
+  });
   const made: Record<string, { production: string; test: string }> = {};
   for (const queueSlug of queueSlugs) {
     const pair: Record<string, string> = {};
     for (const environment of ['production', 'test'] as const) {
       const [queue] = await db
         .insert(queues)
-        .values({ projectId: project.id, name: queueSlug, slug: queueSlug, environment })
+        .values({
+          projectId: project.id,
+          name: queueSlug,
+          slug: queueSlug,
+          environment,
+          templateId: projectTemplate.id,
+        })
         .returning();
       const [pv] = await db
         .insert(policyVersions)
-        .values({ queueId: queue.id, version: 1, config: DEFAULT_POLICY, createdBy: userId })
+        .values({
+          queueId: queue.id,
+          templateId: projectTemplate.id,
+          version: 1,
+          config: DEFAULT_POLICY,
+          createdBy: userId,
+        })
         .returning();
       await db
         .update(queues)

@@ -7,6 +7,8 @@ import { reviewRequests, artifactVersions } from '@/lib/db/schema';
 import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
 import { NoAccess } from '@/components/shell/NoAccess';
 import { getVerifiedChain } from '@/lib/core/eventlog';
+import { verifyAuditBundle } from '@/lib/core/audit-bundle';
+import { buildRequestAuditBundle } from '@/lib/core/audit-export';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,13 +20,15 @@ export const dynamic = 'force-dynamic';
 export default async function TimelinePage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const user = await getUser();
-  if (!user) redirect('/sign-in');
+  if (!user) redirect('/auth');
   const request = await db.query.reviewRequests.findFirst({ where: eq(reviewRequests.id, id) });
   if (!request) notFound();
   const wsId = await workspaceOfRequestOrNull(request.id);
   if (wsId === null || !(await canReview(user.id, wsId))) return <NoAccess />;
 
-  const { rows, verification } = await getVerifiedChain(db, request.id);
+  const { rows } = await getVerifiedChain(db, request.id);
+  const bundle = await buildRequestAuditBundle(db, request.id);
+  const evidence = verifyAuditBundle(bundle);
   const versions = await db
     .select()
     .from(artifactVersions)
@@ -47,7 +51,30 @@ export default async function TimelinePage({ params }: { params: Promise<{ id: s
     'anchor.repinned': '📌',
     'anchor.retired': '🗑',
     'sla.timeout': '⏰',
+    'scope.erased': '⌀',
+    'retention.expired': '⌛',
   };
+
+  const evidenceBadge =
+    evidence.status === 'verified'
+      ? {
+          bg: 'var(--green-100)',
+          fg: 'var(--green-900)',
+          label: `verified · ${rows.length} events`,
+        }
+      : evidence.status === 'intentionally_voided'
+        ? {
+            bg: 'var(--amber-100)',
+            fg: 'var(--amber-900)',
+            label: `intentionally voided · erasure at seq ${evidence.voids[0]?.seq ?? '?'}`,
+          }
+        : {
+            bg: 'var(--red-100)',
+            fg: 'var(--red-900)',
+            label: evidence.chain.ok
+              ? 'FAILED'
+              : `FAILED at seq ${evidence.chain.brokenAtSeq}`,
+          };
 
   return (
     <div style={{ padding: '28px 32px' }}>
@@ -63,12 +90,12 @@ export default async function TimelinePage({ params }: { params: Promise<{ id: s
               fontWeight: 600,
               borderRadius: 9999,
               padding: '1px 8px',
-              background: verification.ok ? 'var(--green-100)' : 'var(--red-100)',
-              color: verification.ok ? 'var(--green-900)' : 'var(--red-900)',
+              background: evidenceBadge.bg,
+              color: evidenceBadge.fg,
             }}
-            title="Hash-chain verification across the full event trail"
+            title="Commitment + chain verification: verified / intentionally voided / FAILED"
           >
-            {verification.ok ? `chain verified · ${rows.length} events` : `chain BROKEN at seq ${verification.brokenAtSeq}`}
+            {evidenceBadge.label}
           </span>
           {request.acceptedHash && (
             <span
@@ -81,20 +108,18 @@ export default async function TimelinePage({ params }: { params: Promise<{ id: s
                 color: 'var(--green-900)',
                 fontFamily: 'var(--font-mono)',
               }}
-              title="Content hash inside the signed acceptance event — shipped is provably what was accepted"
+              title="Content commitment inside the signed acceptance event — shipped is provably what was accepted"
             >
-              sealed sha256:{request.acceptedHash.slice(0, 12)}…
+              sealed:{request.acceptedHash.slice(0, 12)}…
             </span>
           )}
           <div style={{ flex: 1 }} />
-          {versions.length > 1 && (
-            <Link
-              href={`/review/${request.id}/compare`}
-              style={{ fontSize: 13, color: 'var(--blue-700)', textDecoration: 'none', fontWeight: 500 }}
-            >
-              Open compare
-            </Link>
-          )}
+          <Link
+            href={`/requests/${request.id}/audit-bundle`}
+            style={{ fontSize: 13, color: 'var(--blue-700)', textDecoration: 'none', fontWeight: 500 }}
+          >
+            Export audit bundle
+          </Link>
         </div>
 
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

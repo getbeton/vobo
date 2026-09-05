@@ -18,15 +18,31 @@ import {
 import { workspaceOfRequestOrNull, canReview } from '@/lib/core/authz';
 import { NoAccess } from '@/components/shell/NoAccess';
 import { parsePolicyConfig } from '@/lib/core/policy';
+import { remainingWorkForQueue } from '@/lib/core/remaining-work';
+import { listEdits, rejectDecisionCount } from '@/lib/core/suggestions';
 import { ReviewWorkspace } from '@/components/review/ReviewWorkspace';
 import { readFindings } from '@/lib/findings/read';
+import { mergeReviewSearch } from '@/lib/shell/crumbs';
 
 export const dynamic = 'force-dynamic';
 
-export default async function ReviewPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function ReviewPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{
+    project?: string;
+    queue?: string;
+    env?: string;
+    l?: string;
+    r?: string;
+  }>;
+}) {
   const { id } = await params;
+  const sp = await searchParams;
   const user = await getUser();
-  if (!user) redirect('/sign-in');
+  if (!user) redirect('/auth');
 
   const request = await db.query.reviewRequests.findFirst({
     where: eq(reviewRequests.id, id),
@@ -39,6 +55,14 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
   // review, so both slugs travel with the request.
   const queue = await db.query.queues.findFirst({ where: eq(queues.id, request.queueId) });
   const project = await db.query.projects.findFirst({ where: eq(projects.id, request.projectId) });
+  if (project && queue) {
+    const filled = mergeReviewSearch(sp, {
+      projectSlug: project.slug,
+      queueSlug: queue.slug,
+      environment: queue.environment,
+    });
+    if (filled.changed) redirect(`/review/${id}?${filled.search}`);
+  }
 
   const version = await db.query.artifactVersions.findFirst({
     where: and(
@@ -47,6 +71,16 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
     ),
   });
   if (!version) notFound();
+
+  const allVersions = await db
+    .select()
+    .from(artifactVersions)
+    .where(eq(artifactVersions.requestId, request.id))
+    .orderBy(asc(artifactVersions.versionNumber));
+  const previous =
+    request.round >= 2
+      ? allVersions.find((v) => v.versionNumber === request.round - 1) ?? null
+      : null;
 
   const anns = await db
     .select({ ann: annotations, state: anchorStates })
@@ -101,6 +135,7 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
 
   return (
     <ReviewWorkspace
+      key={version.id}
       request={{
         id: request.id,
         title: request.title,
@@ -110,12 +145,22 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
         source: request.source,
         queueSlug: queue?.slug ?? '',
         projectSlug: project?.slug ?? '',
+        environment: queue?.environment ?? 'production',
         policyLabel: pv ? `policy v${pv.version}` : '',
         roundBudget: policy?.roundBudget ?? 3,
         budgetExhausted: Boolean(request.budgetExhaustedAt),
+        rejectCount: await rejectDecisionCount(db, request.id),
+        modality: queue?.modality ?? 'text',
       }}
       contentMd={version.contentMd}
+      previousContentMd={previous?.contentMd ?? null}
       versionId={version.id}
+      versions={allVersions.map((v) => ({
+        id: v.id,
+        number: v.versionNumber,
+        author: v.authorLabel ?? (v.humanAuthored ? 'human' : 'model'),
+        hash: v.contentHash.slice(0, 8),
+      }))}
       annotations={anns.map(({ ann, state }) => ({
         id: ann.id,
         body: ann.body,
@@ -127,6 +172,15 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
         resolved: Boolean(ann.resolvedAt),
         state: state?.state ?? (ann.bornRound === request.round ? 'new' : null),
         confirmation: state?.confirmation ?? null,
+        confidence: state?.confidence ?? null,
+        landing:
+          state?.newStartPos != null
+            ? {
+                start: state.newStartPos,
+                end: state.newEndPos ?? state.newStartPos,
+                quote: state.newQuote ?? '',
+              }
+            : null,
       }))}
       criteria={crits.map((c) => {
         const human = verdicts.find((v) => v.criterionId === c.id)?.verdict ?? null;
@@ -164,12 +218,23 @@ export default async function ReviewPage({ params }: { params: Promise<{ id: str
         };
       })}
       files={files.map((f) => ({ name: f.name, kind: f.contentType ?? 'file' }))}
+      suggestions={(await listEdits(db, request.id, version.id)).map((s) => ({
+        id: s.id,
+        startPos: s.startPos,
+        endPos: s.endPos,
+        originalQuote: s.originalQuote,
+        replacement: s.replacement,
+        status: s.status,
+      }))}
       machineReview={{
         withheld: machine.withheld,
         pending: machine.run?.state === 'pending' || machine.run?.state === 'running',
         failed: machine.run?.state === 'failed',
         overallScore: machine.run?.overallScore ?? request.judgeOverallScore ?? null,
+        runState: machine.run?.state ?? null,
+        judgeEnabled: Boolean(policy?.judgeEnabled),
       }}
+      remainingWork={await remainingWorkForQueue(db, request.queueId)}
     />
   );
 }

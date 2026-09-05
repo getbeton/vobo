@@ -14,7 +14,7 @@ import {
   user as userTable,
 } from '@/lib/db/schema';
 import { auth } from '@/lib/auth/auth';
-import { normalizeEmail } from '@/lib/auth/bootstrap';
+import { assignWorkspaceOnSignup, normalizeEmail } from '@/lib/auth/bootstrap';
 import { redirect } from 'next/navigation';
 import { getUser, getUserWithWorkspace } from '@/lib/db/queries';
 import {
@@ -88,7 +88,7 @@ export const signIn = validatedAction(signInSchema, async (data) => {
     await logActivity(row.workspaceId, row.userId, ActivityType.SIGN_IN);
   }
 
-  redirect('/dashboard');
+  redirect('/admin');
 });
 
 const signUpSchema = z.object({
@@ -135,17 +135,27 @@ export const signUp = validatedAction(signUpSchema, async (data) => {
     throw error;
   }
 
-  // Workspace assignment already happened in the user-create hook, which is
-  // invitation-aware and runs for every signup path. All that is left here is
-  // reporting: which workspace did this person actually land in?
-  const membership = await db.query.workspaceMembers.findFirst({
+  // Workspace assignment already happened in the user-create hook. If the
+  // hook did not land a row, do not crash the signup page — assign here.
+  let membership = await db.query.workspaceMembers.findFirst({
     where: eq(workspaceMembers.userId, createdUserId),
   });
-  const workspaceId = membership!.workspaceId;
+  if (!membership) {
+    await assignWorkspaceOnSignup(createdUserId, email);
+    membership = await db.query.workspaceMembers.findFirst({
+      where: eq(workspaceMembers.userId, createdUserId),
+    });
+    if (!membership) {
+      return {
+        error: 'Account was created without a workspace. Sign in after an operator checks it.',
+        email,
+      };
+    }
+  }
 
-  await logActivity(workspaceId, createdUserId, ActivityType.SIGN_UP);
+  await logActivity(membership.workspaceId, createdUserId, ActivityType.SIGN_UP);
 
-  redirect('/dashboard');
+  redirect('/admin');
 });
 
 export async function signOut() {
@@ -155,6 +165,7 @@ export async function signOut() {
     await logActivity(withWs?.workspaceId, user.id, ActivityType.SIGN_OUT);
   }
   await auth.api.signOut({ headers: await headers() });
+  redirect('/auth');
 }
 
 const updatePasswordSchema = z.object({
@@ -245,7 +256,7 @@ export const deleteAccount = validatedActionWithUser(
       throw error;
     }
 
-    redirect('/sign-in');
+    redirect('/auth');
   }
 );
 

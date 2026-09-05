@@ -1,7 +1,7 @@
 'use server';
 
 import { revalidatePath } from 'next/cache';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
 import { getUser } from '@/lib/db/queries';
 import {
@@ -15,6 +15,14 @@ import { ApiProblem } from '@/lib/core/requests';
 import { can, Role, workspaceOfQueue } from '@/lib/core/authz';
 import { workspaceDefaultsSchema, policyConfigSchema } from '@/lib/core/policy';
 import { publishQueuePolicy } from '@/lib/core/policy-store';
+import {
+  archiveProject,
+  archiveQueue,
+  createProject,
+  createQueue,
+  renameProject,
+  renameQueue,
+} from '@/lib/core/entities';
 import { ActionResult } from './review';
 
 /**
@@ -47,10 +55,82 @@ async function republishWorkspaceQueues(workspaceId: number, userId: string) {
     .select({ id: queues.id })
     .from(queues)
     .innerJoin(projects, eq(projects.id, queues.projectId))
-    .where(eq(projects.workspaceId, workspaceId));
+    .where(and(eq(projects.workspaceId, workspaceId), isNull(queues.archivedAt)));
   for (const q of rows) await publishQueuePolicy(db, q.id, userId);
   return rows.length;
 }
+
+export const createProjectAction = wrap(async (workspaceId: number, name: string, slug?: string) => {
+  const user = await currentUser();
+  await can.operate(user.id, workspaceId);
+  const row = await createProject(db, { workspaceId, name, slug });
+  revalidatePath('/', 'layout');
+  revalidatePath('/admin');
+  return { id: row.id, slug: row.slug, name: row.name };
+});
+
+export const renameProjectAction = wrap(async (projectId: string, name: string) => {
+  const user = await currentUser();
+  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
+  if (!project) throw new ApiProblem(404, 'project_not_found', 'Project not found');
+  await can.operate(user.id, project.workspaceId);
+  const row = await renameProject(db, { projectId, name });
+  revalidatePath('/', 'layout');
+  revalidatePath('/admin');
+  revalidatePath(`/admin/projects/${project.slug}`);
+  return { id: row.id, slug: row.slug, name: row.name };
+});
+
+export const archiveProjectAction = wrap(async (projectId: string) => {
+  const user = await currentUser();
+  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
+  if (!project) throw new ApiProblem(404, 'project_not_found', 'Project not found');
+  await can.operate(user.id, project.workspaceId);
+  await archiveProject(db, { projectId });
+  revalidatePath('/', 'layout');
+  revalidatePath('/admin');
+  revalidatePath(`/admin/projects/${project.slug}`);
+});
+
+export const createQueueAction = wrap(
+  async (projectId: string, name: string, slug?: string) => {
+    const user = await currentUser();
+    const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
+    if (!project) throw new ApiProblem(404, 'project_not_found', 'Project not found');
+    await can.operate(user.id, project.workspaceId);
+    const row = await createQueue(db, { projectId, name, slug, userId: user.id });
+    revalidatePath('/', 'layout');
+    revalidatePath('/admin');
+    revalidatePath(`/admin/projects/${project.slug}`);
+    return { slug: row.slug, name: row.name, environments: row.environments };
+  }
+);
+
+export const renameQueueAction = wrap(
+  async (projectId: string, slug: string, name: string) => {
+    const user = await currentUser();
+    const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
+    if (!project) throw new ApiProblem(404, 'project_not_found', 'Project not found');
+    await can.operate(user.id, project.workspaceId);
+    const row = await renameQueue(db, { projectId, slug, name });
+    revalidatePath('/', 'layout');
+    revalidatePath(`/admin/projects/${project.slug}`);
+    revalidatePath(`/admin/queues/${slug}`);
+    return row;
+  }
+);
+
+export const archiveQueueAction = wrap(async (projectId: string, slug: string) => {
+  const user = await currentUser();
+  const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
+  if (!project) throw new ApiProblem(404, 'project_not_found', 'Project not found');
+  await can.operate(user.id, project.workspaceId);
+  await archiveQueue(db, { projectId, slug });
+  revalidatePath('/', 'layout');
+  revalidatePath('/admin');
+  revalidatePath(`/admin/projects/${project.slug}`);
+  revalidatePath(`/admin/queues/${slug}`);
+});
 
 export const setWorkspaceDefaultsAction = wrap(
   async (workspaceId: number, patch: Record<string, unknown>) => {
@@ -85,7 +165,7 @@ export const setQueueOverrideAction = wrap(
     await can.operate(user.id, wsId);
 
     const queue = await db.query.queues.findFirst({ where: eq(queues.id, queueId) });
-    if (!queue) throw new ApiProblem(404, 'queue_not_found', 'Queue not found');
+    if (!queue || queue.archivedAt) throw new ApiProblem(404, 'queue_not_found', 'Queue not found');
 
     const next: Record<string, unknown> = { ...(queue.policyOverrides as object) };
     for (const [k, v] of Object.entries(patch)) {
@@ -111,13 +191,17 @@ export const setQueueSlugOverrideAction = wrap(
   async (projectId: string, slug: string, patch: Record<string, unknown>) => {
     const user = await currentUser();
     const project = await db.query.projects.findFirst({ where: eq(projects.id, projectId) });
-    if (!project) throw new ApiProblem(404, 'project_not_found', 'Project not found');
+    if (!project || project.archivedAt) {
+      throw new ApiProblem(404, 'project_not_found', 'Project not found');
+    }
     await can.operate(user.id, project.workspaceId);
 
     const rows = await db
       .select({ id: queues.id, overrides: queues.policyOverrides })
       .from(queues)
-      .where(and(eq(queues.projectId, projectId), eq(queues.slug, slug)));
+      .where(
+        and(eq(queues.projectId, projectId), eq(queues.slug, slug), isNull(queues.archivedAt))
+      );
     if (rows.length === 0) throw new ApiProblem(404, 'queue_not_found', 'Queue not found');
 
     for (const row of rows) {
