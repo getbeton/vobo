@@ -20,7 +20,7 @@ export default function IntegratePage() {
       <pre
         style={{
           margin: 0,
-          fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+          fontFamily: 'var(--font-mono)',
           fontSize: 14,
           lineHeight: 1.55,
           whiteSpace: 'pre-wrap',

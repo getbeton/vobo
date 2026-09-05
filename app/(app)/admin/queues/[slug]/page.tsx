@@ -121,8 +121,8 @@ export default async function QueueAdminPage({
           <EntityActions
             canEdit={isOperator}
             name={production.name}
-            onRename={(name) => renameQueueAction(project.id, slug, name)}
-            onArchive={() => archiveQueueAction(project.id, slug)}
+            onRename={renameQueueAction.bind(null, project.id, slug)}
+            onArchive={archiveQueueAction.bind(null, project.id, slug)}
             archiveHref={`/admin/projects/${project.slug}`}
             archiveNoun="queue"
           />
@@ -140,11 +140,9 @@ export default async function QueueAdminPage({
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
             <span
               style={{
-                fontSize: 12,
+                fontSize: 13,
                 fontWeight: 600,
-                color: 'var(--slate-500)',
-                textTransform: 'uppercase',
-                letterSpacing: '.04em',
+                color: 'var(--muted-foreground)',
               }}
             >
               Environments

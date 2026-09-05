@@ -122,11 +122,9 @@ function queueRef(request: RequestData): QueueRef {
 }
 
 const sectionHead: React.CSSProperties = {
-  fontSize: 12,
+  fontSize: 13,
   fontWeight: 600,
-  color: 'var(--slate-500)',
-  textTransform: 'uppercase',
-  letterSpacing: '.04em',
+  color: 'var(--muted-foreground)',
 };
 
 const kbdSolid: React.CSSProperties = {
@@ -1462,7 +1460,7 @@ export function ReviewWorkspace({
                       <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         Account dossier
                       </span>
-                      <span style={{ fontSize: 10, color: 'var(--slate-400)', textTransform: 'uppercase' }}>
+                      <span style={{ fontSize: 11, color: 'var(--slate-400)', fontFamily: 'var(--font-mono)' }}>
                         source
                       </span>
                     </button>
@@ -1484,7 +1482,7 @@ export function ReviewWorkspace({
                       <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {f.name}
                       </span>
-                      <span style={{ fontSize: 10, color: 'var(--slate-400)', textTransform: 'uppercase' }}>
+                      <span style={{ fontSize: 11, color: 'var(--slate-400)', fontFamily: 'var(--font-mono)' }}>
                         {f.kind}
                       </span>
                     </div>

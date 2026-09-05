@@ -412,11 +412,9 @@ export function QueueScreen({
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
               <span
                 style={{
-                  fontSize: 12,
+                  fontSize: 13,
                   fontWeight: 600,
                   color: 'var(--blue-700)',
-                  textTransform: 'uppercase',
-                  letterSpacing: '.05em',
                 }}
               >
                 Next up
