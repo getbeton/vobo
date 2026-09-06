@@ -220,6 +220,25 @@ describe('publishQueuePolicy', () => {
     expect(res.changed).toBe(false);
     expect((await resolveQueuePolicy(db, fx.queueId)).config.roundBudget).toBe(2);
   });
+
+  it('refuses operator patches of judgeKeyEnv and judgeBaseUrl', async () => {
+    await expect(
+      patchTemplateConfig(
+        db,
+        fx.workspaceTemplateId,
+        { judgeKeyEnv: 'POSTGRES_URL' },
+        fx.userId
+      )
+    ).rejects.toMatchObject({ status: 422, code: 'policy_key_forbidden' });
+    await expect(
+      patchTemplateConfig(
+        db,
+        fx.workspaceTemplateId,
+        { judgeBaseUrl: 'https://attacker.example' },
+        fx.userId
+      )
+    ).rejects.toMatchObject({ status: 422, code: 'policy_key_forbidden' });
+  });
 });
 
 describe('supply targets a template, not a live policy', () => {

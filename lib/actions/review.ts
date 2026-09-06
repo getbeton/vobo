@@ -124,7 +124,7 @@ export const setCriterionAction = wrap(
 
 export const confirmFindingAction = wrap(async (requestId: string, findingId: string) => {
   const user = await guardReviewer(requestId);
-  const res = await confirmFinding(db, { findingId, userId: user.id });
+  const res = await confirmFinding(db, { requestId, findingId, userId: user.id });
   revalidatePath(`/review/${requestId}`);
   return { verdict: res.verdict };
 });
@@ -132,7 +132,7 @@ export const confirmFindingAction = wrap(async (requestId: string, findingId: st
 export const dismissFindingAction = wrap(
   async (requestId: string, findingId: string, reason?: string) => {
     const user = await guardReviewer(requestId);
-    const res = await dismissFinding(db, { findingId, userId: user.id, reason });
+    const res = await dismissFinding(db, { requestId, findingId, userId: user.id, reason });
     revalidatePath(`/review/${requestId}`);
     return { verdict: res.verdict };
   }

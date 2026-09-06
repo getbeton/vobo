@@ -51,6 +51,7 @@ export const judgeRunStateEnum = pgEnum('judge_run_state', [
   'running',
   'completed',
   'failed',
+  'dead',
   'not_sampled',
 ]);
 

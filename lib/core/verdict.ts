@@ -86,13 +86,21 @@ export async function approveGate(
     .from(criteriaVerdicts)
     .where(and(eq(criteriaVerdicts.versionId, version.id), eq(criteriaVerdicts.userId, userId)));
   const machineRows = await tx
-    .select({ key: machineFindings.criterionKey })
+    .select({
+      key: machineFindings.criterionKey,
+      passed: machineFindings.passed,
+      triage: machineFindings.triage,
+    })
     .from(machineFindings)
     .where(and(eq(machineFindings.versionId, version.id), isNull(machineFindings.purgedAt)));
   const humanIds = new Set(scored.map((s) => s.criterionId));
-  const machineKeys = new Set(machineRows.map((m) => m.key));
+  const machinePassKeys = new Set(
+    machineRows
+      .filter((m) => m.triage !== 'suppressed' && m.passed === true)
+      .map((m) => m.key)
+  );
   const unscored = activeCriteria.filter(
-    (c) => !humanIds.has(c.id) && !machineKeys.has(c.key)
+    (c) => !humanIds.has(c.id) && !machinePassKeys.has(c.key)
   ).length;
   if (unscored > 0) {
     reasons.push(`Score all criteria to proceed — ${unscored} left`);
@@ -210,6 +218,18 @@ export async function ship(db: Db, input: ShipInput) {
     const policy = await getPolicyForRequest(tx, request.policyVersionId);
 
     const untriaged = await untriagedFindings(tx, request.id, version.id);
+    const blockingUntriaged = untriaged.filter((f) => f.severity === 'critical');
+    if (
+      (input.kind === 'approve' || input.kind === 'approve_edited') &&
+      blockingUntriaged.length > 0 &&
+      !input.overrideUntriagedFindings
+    ) {
+      throw new ApiProblem(
+        422,
+        'untriaged_findings',
+        `${blockingUntriaged.length} untriaged critical finding(s)`
+      );
+    }
 
     const liveEdits = await listEdits(tx, request.id, version.id);
     if (liveEdits.some((r) => r.status === 'pending' || r.status === 'applied')) {
@@ -330,8 +350,13 @@ export async function ship(db: Db, input: ShipInput) {
         );
     }
 
-    const criteriaRows = await tx
+    const activeCriteria = await tx
+      .select()
+      .from(criteria)
+      .where(and(eq(criteria.queueId, request.queueId), isNull(criteria.archivedAt)));
+    const humanRows = await tx
       .select({
+        criterionId: criteriaVerdicts.criterionId,
         key: criteria.key,
         verdict: criteriaVerdicts.verdict,
       })
@@ -340,6 +365,34 @@ export async function ship(db: Db, input: ShipInput) {
       .where(
         and(eq(criteriaVerdicts.versionId, version.id), eq(criteriaVerdicts.userId, input.userId))
       );
+    const machineForPayload = await tx
+      .select({
+        key: machineFindings.criterionKey,
+        passed: machineFindings.passed,
+        score: machineFindings.score,
+        triage: machineFindings.triage,
+      })
+      .from(machineFindings)
+      .where(and(eq(machineFindings.versionId, version.id), isNull(machineFindings.purgedAt)));
+    const humanByCritId = new Map(humanRows.map((h) => [h.criterionId, h]));
+    const machinePassByKey = new Map(
+      machineForPayload
+        .filter((m) => m.triage !== 'suppressed' && m.passed === true)
+        .map((m) => [m.key, m])
+    );
+    const criteriaRows = activeCriteria.map((c) => {
+      const human = humanByCritId.get(c.id);
+      if (human) return { key: c.key, verdict: human.verdict, source: 'human' as const };
+      const machine = machinePassByKey.get(c.key);
+      if (machine)
+        return {
+          key: c.key,
+          verdict: 'pass' as const,
+          source: 'machine' as const,
+          score: machine.score,
+        };
+      return { key: c.key, verdict: null, source: null };
+    });
 
     const basePayload = {
       customer_request_id: request.customerRequestId,

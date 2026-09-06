@@ -890,6 +890,61 @@ describe('ReviewWorkspace — the single verdict button', () => {
     expect(screen.getByTestId('verdict-button').textContent).toMatch(/Reject/);
   });
 
+  it('waits for a pending criterion save before Cmd+Enter ships', async () => {
+    let release: (value: { ok: true }) => void = () => {};
+    setCriterion.mockImplementationOnce(
+      () =>
+        new Promise<{ ok: true }>((resolve) => {
+          release = resolve;
+        })
+    );
+    renderJudged([
+      { ...JUDGED[0], verdict: 'pass' },
+      { ...JUDGED[1], verdict: null, finding: null, score: null, source: null },
+    ]);
+    const last = screen.getByTestId('criterion-c2');
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('criterion-c1')));
+    last.focus();
+    fireEvent.keyDown(last, { key: 'Enter' });
+    await waitFor(() => expect(setCriterion).toHaveBeenCalledWith('r1', 'c2', 'pass'));
+    fireEvent.keyDown(last, { key: 'Enter', metaKey: true });
+    await new Promise((r) => setTimeout(r, 40));
+    expect(ship).not.toHaveBeenCalled();
+    release({ ok: true });
+    await waitFor(() => expect(ship).toHaveBeenCalledTimes(1));
+    expect(ship.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ requestId: 'r1', kind: 'approve' })
+    );
+  });
+
+  it('shows untriaged PII on the rail', () => {
+    render(
+      <ReviewWorkspace
+        request={REQUEST}
+        contentMd={CONTENT}
+        versionId="v1"
+        annotations={[]}
+        criteria={CRITERIA}
+        files={[]}
+        piiFindings={[
+          {
+            id: 'p1',
+            quote: 'dana@acme.test',
+            note: 'Email address in the artifact.',
+            triage: 'untriaged',
+            startPos: 0,
+            endPos: 14,
+          },
+        ]}
+      />
+    );
+    expect(screen.getByTestId('pii-findings')).toBeTruthy();
+    expect(screen.getByText('dana@acme.test')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Confirm' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
+    expect((screen.getByTestId('verdict-button') as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('Cmd+Enter ships accept when every criterion passes', async () => {
     renderJudged([
       { ...JUDGED[0], verdict: 'pass' },

@@ -15,6 +15,8 @@ import {
   resolveCommentAction,
   retireAction,
   setCriterionAction,
+  confirmFindingAction,
+  dismissFindingAction,
   shipAction,
   gateAction,
   createSuggestionAction,
@@ -86,12 +88,21 @@ export interface CriterionData {
   finding?: CriterionFinding | null;
 }
 
+export interface PiiFindingData {
+  id: string;
+  quote: string;
+  note: string;
+  triage: string;
+  startPos: number;
+  endPos: number;
+}
+
 export interface MachineReviewData {
   withheld: boolean;
   pending: boolean;
   failed: boolean;
   overallScore: number | null;
-  runState?: 'pending' | 'running' | 'completed' | 'failed' | 'not_sampled' | null;
+  runState?: 'pending' | 'running' | 'completed' | 'failed' | 'dead' | 'not_sampled' | null;
   judgeEnabled?: boolean;
 }
 
@@ -212,6 +223,7 @@ export function ReviewWorkspace({
   criteria,
   files,
   machineReview = null,
+  piiFindings = [],
   suggestions = [],
   remainingWork = null,
 }: {
@@ -224,6 +236,7 @@ export function ReviewWorkspace({
   criteria: CriterionData[];
   files: Array<{ name: string; kind: string }>;
   machineReview?: MachineReviewData | null;
+  piiFindings?: PiiFindingData[];
   suggestions?: SuggestionData[];
   remainingWork?: RemainingWork | null;
 }) {
@@ -248,6 +261,9 @@ export function ReviewWorkspace({
   const [shipping, setShipping] = useState(false);
   const [ackNeeded, setAckNeeded] = useState(false);
   const [localVerdict, setLocalVerdict] = useState<Record<string, 'pass' | 'fail' | 'na'>>({});
+  const [criterionSaving, setCriterionSaving] = useState(false);
+  const pendingSaves = useRef(Promise.resolve<void>(undefined));
+  const savesInFlight = useRef(0);
   const [openIds, setOpenIds] = useState<Record<string, boolean>>({});
   const [focusedCriterionId, setFocusedCriterionId] = useState<string | null>(null);
   const [hoverRange, setHoverRange] = useState<{
@@ -727,11 +743,35 @@ export function ReviewWorkspace({
   };
 
   const setCriterion = (criterionId: string, verdict: 'pass' | 'fail' | 'na') => {
+    const hadLocal = Object.prototype.hasOwnProperty.call(localVerdict, criterionId);
+    const prior = localVerdict[criterionId];
     setLocalVerdict((prev) => ({ ...prev, [criterionId]: verdict }));
-    startTransition(async () => {
-      await setCriterionAction(request.id, criterionId, verdict);
-      router.refresh();
-    });
+    setError(null);
+    savesInFlight.current += 1;
+    setCriterionSaving(true);
+    pendingSaves.current = pendingSaves.current
+      .catch(() => undefined)
+      .then(async () => {
+        const res = await setCriterionAction(request.id, criterionId, verdict);
+        if (!res.ok) {
+          setLocalVerdict((prev) => {
+            const next = { ...prev };
+            if (hadLocal) next[criterionId] = prior;
+            else delete next[criterionId];
+            return next;
+          });
+          setError(res.error);
+          throw new Error(res.error);
+        }
+        router.refresh();
+      })
+      .finally(() => {
+        savesInFlight.current -= 1;
+        if (savesInFlight.current <= 0) {
+          savesInFlight.current = 0;
+          setCriterionSaving(false);
+        }
+      });
   };
 
   const showFinding = (c: CriterionData | undefined) => {
@@ -927,8 +967,14 @@ export function ReviewWorkspace({
     }
   };
 
+  const untriagedPii = piiFindings.filter((f) => f.triage === 'untriaged');
+
   const fireMainVerdict = () => {
     if (shippingRef.current) return;
+    if (savesInFlight.current > 0) {
+      pendingSaves.current.then(() => mainVerdictRef.current?.()).catch(() => {});
+      return;
+    }
     if (appliedSuggestions.length > 0 && pendingSuggestions.length === 0) {
       saveEdits();
       return;
@@ -948,12 +994,20 @@ export function ReviewWorkspace({
       return;
     }
     if (sealingPrior) {
+      if (untriagedPii.length > 0) {
+        setError(`${untriagedPii.length} untriaged critical finding(s)`);
+        return;
+      }
       shipVerdict('approve', true, acceptVersionId);
       return;
     }
     if (shouldReject) {
       if (rejectBlocked) return;
       shipVerdict(unresolved.length > 0 ? 'reject_corrections' : 'reject_rerun');
+      return;
+    }
+    if (untriagedPii.length > 0) {
+      setError(`${untriagedPii.length} untriaged critical finding(s)`);
       return;
     }
     shipVerdict('approve', ackNeeded, acceptVersionId);
@@ -1091,7 +1145,7 @@ export function ReviewWorkspace({
     machineReview?.judgeEnabled &&
       runState &&
       request.status !== 'accepted' &&
-      ['completed', 'failed', 'not_sampled', 'running', 'pending'].includes(runState)
+      ['completed', 'failed', 'dead', 'not_sampled', 'running', 'pending'].includes(runState)
   );
   const rerunBusy = runState === 'running' || runState === 'pending';
 
@@ -1099,11 +1153,13 @@ export function ReviewWorkspace({
   const showAccept = !showSave && (sealingPrior || !shouldReject);
   const verdictDisabled =
     shipping ||
+    criterionSaving ||
     pendingSuggestions.length > 0 ||
     Boolean(machineReview?.pending && !showSave && !lastRoundReject) ||
     (!showSave && unscored > 0 && !lastRoundReject) ||
     (!showSave && !sealingPrior && shouldReject && rejectBlocked) ||
-    (showAccept && Boolean(gateInfo?.blocked));
+    (showAccept && Boolean(gateInfo?.blocked)) ||
+    (showAccept && untriagedPii.length > 0);
 
   const verdictTitle = lastRoundReject
     ? 'Reject flags this for an operator and opens the next item'
@@ -1722,6 +1778,68 @@ export function ReviewWorkspace({
                   {request.policyLabel}
                 </span>
               </div>
+              {piiFindings.length > 0 && (
+                <div data-testid="pii-findings" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  {piiFindings.map((f) => (
+                    <div
+                      key={f.id}
+                      data-testid={`pii-finding-${f.id}`}
+                      onMouseEnter={() =>
+                        f.endPos > f.startPos
+                          ? setHoverRange({ startPos: f.startPos, endPos: f.endPos, passed: false })
+                          : setHoverRange(null)
+                      }
+                      onMouseLeave={() => setHoverRange(null)}
+                      style={{
+                        border: '1px solid var(--red-500)',
+                        borderRadius: 8,
+                        padding: 10,
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 6,
+                      }}
+                    >
+                      <span style={{ fontSize: 12, fontWeight: 600 }}>PII</span>
+                      <span style={{ fontSize: 12, color: 'var(--slate-600)' }}>{f.quote}</span>
+                      <span style={{ fontSize: 12, color: 'var(--slate-500)' }}>{f.note}</span>
+                      {f.triage === 'untriaged' ? (
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button
+                            type="button"
+                            className="ds-btn ds-btn--ghost"
+                            style={{ height: 28, fontSize: 12 }}
+                            onClick={() => {
+                              startTransition(async () => {
+                                const res = await confirmFindingAction(request.id, f.id);
+                                if (!res.ok) setError(res.error);
+                                else router.refresh();
+                              });
+                            }}
+                          >
+                            Confirm
+                          </button>
+                          <button
+                            type="button"
+                            className="ds-btn ds-btn--ghost"
+                            style={{ height: 28, fontSize: 12 }}
+                            onClick={() => {
+                              startTransition(async () => {
+                                const res = await dismissFindingAction(request.id, f.id);
+                                if (!res.ok) setError(res.error);
+                                else router.refresh();
+                              });
+                            }}
+                          >
+                            Dismiss
+                          </button>
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: 11, color: 'var(--slate-500)' }}>{f.triage}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
               {scoredCriteria.map((c) => {
                 const hasAi = Boolean(c.finding) || c.score != null;
                 const expanded = !hasAi || Boolean(openIds[c.id]);

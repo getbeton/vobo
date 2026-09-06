@@ -12,7 +12,7 @@ import { ApiProblem } from '@/lib/core/requests';
 import { parsePolicyConfig } from '@/lib/core/policy';
 import { BUILTIN_JUDGE_SLUG, ensureBuiltinProducer } from '@/lib/findings/producers';
 
-const RERUNNABLE = new Set(['completed', 'failed', 'not_sampled']);
+const RERUNNABLE = new Set(['completed', 'failed', 'dead', 'not_sampled']);
 
 /**
  * Reset the existing judge_runs row for the current version. Does not insert a

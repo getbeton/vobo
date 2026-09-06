@@ -53,7 +53,7 @@ const passAll: JudgeScorer = async ({ criteria }) =>
     criterionKey: c.key,
     score: 1,
     passed: true,
-    quote: null,
+    quote: 'we sincerely apologize for the interruption.',
     note: 'ok',
   }));
 
@@ -213,7 +213,7 @@ describe('VOBO-298: rerun judge on the current artifact', () => {
   it('purged judge findings do not satisfy the criteria gate', async () => {
     const { request, version, run } = await createPending();
     await runOneJudge(db, run.id, {
-      scorer: failVoice,
+      scorer: passAll,
       env: { VOBO_JUDGE_OPENAI_API_KEY: 'sk-test' },
     });
     await claim(db, request.id, fx.userId);

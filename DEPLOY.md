@@ -100,7 +100,16 @@ POSTGRES_URL=... node scripts/enable-pico-judge.mjs
 POSTGRES_URL=... node scripts/backfill-judge-runs.mjs
 ```
 
-The worker picks up pending runs on its 5s loop. Findings land in the Machine review strip.
+The worker picks up pending runs on its 5s loop. Criterion scores land on the
+criterion cards. PII (emails/phones) lands in a PII list on the review rail —
+confirm or dismiss those before Accept. The judge sends email/phone-redacted
+artifact text to `https://api.openai.com/v1`. Names and addresses still go out.
+
+`judgeKeyEnv` and `judgeBaseUrl` are platform-owned. The worker always reads
+`VOBO_JUDGE_OPENAI_API_KEY` and only calls `api.openai.com`.
+
+Backfill keys off the queue’s **active** policy, not the policy stamped on the
+request at create. Run `enable-pico-judge.mjs` first, then `backfill-judge-runs.mjs`.
 
 ## Smoke check
 
