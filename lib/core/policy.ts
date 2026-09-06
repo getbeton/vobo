@@ -85,6 +85,16 @@ export const POLICY_KEYS = [
 
 export type PolicyKey = (typeof POLICY_KEYS)[number];
 
+/** Env-name lookup and provider URL are platform-owned. Operators cannot set them. */
+export const PLATFORM_POLICY_KEYS = ['judgeKeyEnv', 'judgeBaseUrl'] as const;
+
+export function operatorForbiddenPolicyKey(patch: Record<string, unknown>): string | null {
+  for (const key of PLATFORM_POLICY_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) return key;
+  }
+  return null;
+}
+
 export function parsePolicyConfig(raw: unknown): PolicyConfig {
   return policyConfigSchema.parse(raw);
 }

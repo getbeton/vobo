@@ -195,7 +195,9 @@ export async function rankedQueue(db: DbOrTx, queueId: string, userId: string): 
     if (rule === 'sla') orderSql.push(sql`${reviewRequests.slaDueAt} asc nulls last`);
     else if (rule === 'priority') orderSql.push(asc(reviewRequests.priority));
     else if (rule === 'judge_confidence')
-      orderSql.push(sql`${reviewRequests.judgeOverallScore} asc nulls last`);
+      orderSql.push(
+        sql`case when ${reviewRequests.judgeBlind} then null else ${reviewRequests.judgeOverallScore} end asc nulls last`
+      );
     else orderSql.push(asc(reviewRequests.createdAt));
   }
 
@@ -220,9 +222,11 @@ export async function rankedQueue(db: DbOrTx, queueId: string, userId: string): 
       sticky ? 'sticky: returning to you' : null,
       request.slaDueAt ? `sla ${request.slaDueAt.toISOString()}` : 'no sla',
       `priority P${request.priority}`,
-      request.judgeOverallScore != null
-        ? `judge ${request.judgeOverallScore.toFixed(2)}`
-        : 'judge —',
+      request.judgeBlind
+        ? null
+        : request.judgeOverallScore != null
+          ? `judge ${request.judgeOverallScore.toFixed(2)}`
+          : 'judge —',
       'fifo',
     ].filter(Boolean);
     return {

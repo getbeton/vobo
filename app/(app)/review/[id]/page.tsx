@@ -118,12 +118,14 @@ export default async function ReviewPage({
     audience: 'reviewer',
   });
 
-  const [latestRecord] = await db
-    .select()
-    .from(judgeRecords)
-    .where(eq(judgeRecords.versionId, version.id))
-    .orderBy(desc(judgeRecords.id))
-    .limit(1);
+  const [latestRecord] = machine.withheld
+    ? []
+    : await db
+        .select()
+        .from(judgeRecords)
+        .where(eq(judgeRecords.versionId, version.id))
+        .orderBy(desc(judgeRecords.id))
+        .limit(1);
   const recordScores = (
     latestRecord?.payload as { scores?: Array<{ criterion?: string; score?: number }> } | null
   )?.scores;
@@ -132,6 +134,9 @@ export default async function ReviewPage({
       .filter((s) => typeof s.criterion === 'string' && typeof s.score === 'number')
       .map((s) => [s.criterion as string, s.score as number])
   );
+  const piiFindings = machine.withheld
+    ? []
+    : machine.findings.filter((f) => f.criterionKey === 'pii');
 
   return (
     <ReviewWorkspace
@@ -226,11 +231,21 @@ export default async function ReviewPage({
         replacement: s.replacement,
         status: s.status,
       }))}
+      piiFindings={piiFindings.map((f) => ({
+        id: f.id,
+        quote: f.quote,
+        note: f.note,
+        triage: f.triage,
+        startPos: f.startPos,
+        endPos: f.endPos,
+      }))}
       machineReview={{
         withheld: machine.withheld,
         pending: machine.run?.state === 'pending' || machine.run?.state === 'running',
-        failed: machine.run?.state === 'failed',
-        overallScore: machine.run?.overallScore ?? request.judgeOverallScore ?? null,
+        failed: machine.run?.state === 'failed' || machine.run?.state === 'dead',
+        overallScore: machine.withheld
+          ? null
+          : (machine.run?.overallScore ?? request.judgeOverallScore ?? null),
         runState: machine.run?.state ?? null,
         judgeEnabled: Boolean(policy?.judgeEnabled),
       }}

@@ -13,7 +13,11 @@ import {
 } from '@/lib/db/schema';
 import { ApiProblem } from '@/lib/core/requests';
 import { can, Role, workspaceOfQueue } from '@/lib/core/authz';
-import { workspaceDefaultsSchema, policyConfigSchema } from '@/lib/core/policy';
+import {
+  workspaceDefaultsSchema,
+  policyConfigSchema,
+  operatorForbiddenPolicyKey,
+} from '@/lib/core/policy';
 import { publishQueuePolicy } from '@/lib/core/policy-store';
 import {
   archiveProject,
@@ -139,6 +143,9 @@ export const setWorkspaceDefaultsAction = wrap(
     const ws = await db.query.workspaces.findFirst({ where: eq(workspaces.id, workspaceId) });
     if (!ws) throw new ApiProblem(404, 'workspace_not_found', 'Workspace not found');
 
+    const forbidden = operatorForbiddenPolicyKey(patch);
+    if (forbidden)
+      throw new ApiProblem(422, 'policy_key_forbidden', `${forbidden} is platform-owned`);
     const merged = workspaceDefaultsSchema.parse({
       ...(ws.policyDefaults as object),
       ...patch,
@@ -166,6 +173,10 @@ export const setQueueOverrideAction = wrap(
 
     const queue = await db.query.queues.findFirst({ where: eq(queues.id, queueId) });
     if (!queue || queue.archivedAt) throw new ApiProblem(404, 'queue_not_found', 'Queue not found');
+
+    const forbidden = operatorForbiddenPolicyKey(patch);
+    if (forbidden)
+      throw new ApiProblem(422, 'policy_key_forbidden', `${forbidden} is platform-owned`);
 
     const next: Record<string, unknown> = { ...(queue.policyOverrides as object) };
     for (const [k, v] of Object.entries(patch)) {
@@ -203,6 +214,10 @@ export const setQueueSlugOverrideAction = wrap(
         and(eq(queues.projectId, projectId), eq(queues.slug, slug), isNull(queues.archivedAt))
       );
     if (rows.length === 0) throw new ApiProblem(404, 'queue_not_found', 'Queue not found');
+
+    const forbidden = operatorForbiddenPolicyKey(patch);
+    if (forbidden)
+      throw new ApiProblem(422, 'policy_key_forbidden', `${forbidden} is platform-owned`);
 
     for (const row of rows) {
       const next: Record<string, unknown> = { ...(row.overrides as object) };

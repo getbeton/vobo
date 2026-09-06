@@ -19,6 +19,7 @@ import {
   policyPartialSchema,
   policyVersionStamp,
   resolvePolicy,
+  operatorForbiddenPolicyKey,
   type PolicyLayer,
   type PolicyVersionStamp,
 } from './policy';
@@ -347,6 +348,9 @@ export async function patchTemplateConfig(
   userId: string | null
 ): Promise<{ template: PolicyTemplate; republished: number }> {
   const current = await getTemplate(tx, templateId);
+  const forbidden = operatorForbiddenPolicyKey(patch);
+  if (forbidden)
+    throw new ApiProblem(422, 'policy_key_forbidden', `${forbidden} is platform-owned`);
   const next: Record<string, unknown> = { ...(current.config as object) };
   for (const [k, v] of Object.entries(patch)) {
     if (v === '__inherit__') delete next[k];

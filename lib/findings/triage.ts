@@ -50,13 +50,15 @@ async function applyCriterion(
 
 export async function confirmFinding(
   db: Db,
-  input: { findingId: string; userId: string }
+  input: { requestId: string; findingId: string; userId: string }
 ) {
   return db.transaction(async (tx) => {
     const [locked] = await tx
       .select()
       .from(machineFindings)
-      .where(eq(machineFindings.id, input.findingId))
+      .where(
+        and(eq(machineFindings.id, input.findingId), eq(machineFindings.requestId, input.requestId))
+      )
       .for('update');
     if (!locked) throw new ApiProblem(404, 'finding_not_found', 'Finding not found');
     if (locked.triage === 'confirmed' || locked.triage === 'dismissed')
@@ -104,7 +106,7 @@ export async function confirmFinding(
 
 export async function dismissFinding(
   db: Db,
-  input: { findingId: string; userId: string; reason?: string }
+  input: { requestId: string; findingId: string; userId: string; reason?: string }
 ) {
   const reason = (input.reason ?? 'declined').trim() || 'declined';
 
@@ -112,7 +114,9 @@ export async function dismissFinding(
     const [locked] = await tx
       .select()
       .from(machineFindings)
-      .where(eq(machineFindings.id, input.findingId))
+      .where(
+        and(eq(machineFindings.id, input.findingId), eq(machineFindings.requestId, input.requestId))
+      )
       .for('update');
     if (!locked) throw new ApiProblem(404, 'finding_not_found', 'Finding not found');
     if (locked.triage === 'confirmed' || locked.triage === 'dismissed')
