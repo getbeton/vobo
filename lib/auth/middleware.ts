@@ -64,7 +64,7 @@ export function withWorkspace<T>(action: ActionWithWorkspaceFunction<T>) {
   return async (formData: FormData): Promise<T> => {
     const user = await getUser();
     if (!user) {
-      redirect('/sign-in');
+      redirect('/auth');
     }
 
     const workspace = await getWorkspaceForUser();

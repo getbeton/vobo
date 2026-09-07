@@ -32,6 +32,7 @@ const PERSIST_CONTEXT = 0.6;
 const simToConfidence = (sim: number): Confidence =>
   sim >= 0.75 ? 'high' : sim >= 0.5 ? 'med' : 'low';
 
+/** Text-modality classifier. Other modalities plug in via `classifyFor`. */
 export function classify(
   selector: Selector,
   prevText: string,

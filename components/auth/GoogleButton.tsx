@@ -3,19 +3,22 @@
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { clientSignIn } from '@/lib/auth/client';
+import { Button } from '@/components/ui/button';
 
 /**
  * Google sign-in. Rendered only where the deployment has a Google OAuth client
  * configured — a self-hosted install without one never sees a dead button.
  */
-export function GoogleButton({ redirectTo = '/dashboard' }: { redirectTo?: string }) {
+export function GoogleButton({ redirectTo = '/welcome' }: { redirectTo?: string }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   return (
     <div className="space-y-2">
-      <button
+      <Button
         type="button"
+        variant="outline"
+        className="w-full"
         disabled={pending}
         onClick={async () => {
           setError(null);
@@ -27,7 +30,6 @@ export function GoogleButton({ redirectTo = '/dashboard' }: { redirectTo?: strin
             setPending(false);
           }
         }}
-        className="w-full flex justify-center items-center gap-2 py-2 px-4 border border-gray-300 rounded-full shadow-sm text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500 disabled:opacity-60"
       >
         {pending ? (
           <Loader2 className="animate-spin h-4 w-4" />
@@ -52,7 +54,7 @@ export function GoogleButton({ redirectTo = '/dashboard' }: { redirectTo?: strin
           </svg>
         )}
         Continue with Google
-      </button>
+      </Button>
       {error && <p className="text-sm text-red-600 text-center">{error}</p>}
     </div>
   );

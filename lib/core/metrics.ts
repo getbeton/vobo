@@ -6,6 +6,9 @@
  * round to demo "per accepted unit". A real deployment cannot know that, so
  * cost renders "—" unless VOBO_COST_PER_ROUND is configured. Every other
  * number is computed from real rows.
+ *
+ * Remaining work (VOBO-295) is a separate pair. Do not reuse `computeMetrics.open`:
+ * that helper drops rejected. Remaining includes rejected.
  */
 
 export interface RequestMetricRow {
@@ -26,6 +29,49 @@ export interface EntityMetrics {
 }
 
 const DASH = '—';
+
+const REMAINING_STATUSES = ['open', 'claimed', 'rejected', 'escalated', 'held_blind'] as const;
+export type RemainingStatus = (typeof REMAINING_STATUSES)[number];
+
+export interface RemainingWork {
+  remaining: number;
+  accepted: number;
+  split: Record<RemainingStatus, number>;
+}
+
+/**
+ * Remaining = live rows that are not accepted. Rejected is remaining.
+ * Caller must pass only non-archived rows.
+ */
+export function remainingWork(rows: Array<{ status: string }>): RemainingWork {
+  const split: Record<RemainingStatus, number> = {
+    open: 0,
+    claimed: 0,
+    rejected: 0,
+    escalated: 0,
+    held_blind: 0,
+  };
+  let accepted = 0;
+  for (const r of rows) {
+    if (r.status === 'accepted') {
+      accepted += 1;
+      continue;
+    }
+    if ((REMAINING_STATUSES as readonly string[]).includes(r.status)) {
+      split[r.status as RemainingStatus] += 1;
+    }
+  }
+  const remaining = split.open + split.claimed + split.rejected + split.escalated + split.held_blind;
+  return { remaining, accepted, split };
+}
+
+export function remainingWorkLabel(w: RemainingWork): string {
+  return `${w.remaining} remaining · ${w.accepted} accepted`;
+}
+
+export function remainingWorkTitle(w: RemainingWork): string {
+  return `open ${w.split.open} / claimed ${w.split.claimed} / rejected ${w.split.rejected} / escalated ${w.split.escalated} / held_blind ${w.split.held_blind}`;
+}
 
 export function computeMetrics(rows: RequestMetricRow[]): EntityMetrics {
   const accepted = rows.filter((r) => r.status === 'accepted');

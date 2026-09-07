@@ -4,6 +4,11 @@ import { db } from '@/lib/db/drizzle';
 import { reviewRequests, queues, events } from '@/lib/db/schema';
 import { authenticateApiKey, problemResponse } from '@/lib/core/apiauth';
 import { createReview } from '@/lib/core/requests';
+import {
+  alreadyShipped,
+  AWAITING_VERSION_STATUSES,
+  isAwaitingVersion,
+} from '@/lib/core/pull-contract';
 
 /**
  * Flat pipeline API (customer request ids contain slashes, so ids travel in
@@ -16,11 +21,13 @@ import { createReview } from '@/lib/core/requests';
  */
 
 const createSchema = z.object({
-  queue: z.string().min(1),
+  template: z.string().min(1).optional(),
+  queue: z.string().min(1).optional(),
   environment: z.enum(['production', 'test']).optional(),
   request_id: z.string().min(1).max(255),
   title: z.string().min(1).max(300),
   content_md: z.string().min(1),
+  modality: z.enum(['text', 'code', 'table', 'image']).optional(),
   prompt: z.string().optional(),
   source: z.string().optional(),
   priority: z.number().int().min(1).max(5).optional(),
@@ -36,11 +43,13 @@ export async function POST(req: Request) {
     const body = createSchema.parse(await req.json());
     const result = await createReview(db, {
       projectId: principal.projectId,
+      templateSlug: body.template,
       queueSlug: body.queue,
       environment: body.environment,
       customerRequestId: body.request_id,
       title: body.title,
       contentMd: body.content_md,
+      modality: body.modality,
       prompt: body.prompt,
       source: body.source,
       priority: body.priority,
@@ -94,7 +103,7 @@ export async function GET(req: Request) {
       conditions.push(eq(reviewRequests.queueId, queue.id));
     }
     if (awaiting) {
-      conditions.push(eq(reviewRequests.status, 'rejected'));
+      conditions.push(inArray(reviewRequests.status, [...AWAITING_VERSION_STATUSES]));
     } else if (status) {
       conditions.push(
         inArray(
@@ -133,10 +142,12 @@ export async function GET(req: Request) {
         request_id: request.customerRequestId,
         id: request.id,
         status: request.status,
-        awaiting_version: request.status === 'rejected',
+        awaiting_version: isAwaitingVersion(request.status),
+        already_shipped: alreadyShipped(request.status),
         round: request.round,
         title: request.title,
         accepted_hash: request.acceptedHash,
+        budget_exhausted_at: request.budgetExhaustedAt,
         archived_at: request.archivedAt,
         updated_at: request.updatedAt,
       })),

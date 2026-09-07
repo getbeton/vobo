@@ -1,11 +1,16 @@
 import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import { and, asc, eq, inArray, isNull } from 'drizzle-orm';
+import {
+  setQueueSlugOverrideAction,
+  renameQueueAction,
+  archiveQueueAction,
+} from '@/lib/actions/admin';
+import { SettingRow, EntityActions } from '@/components/admin/EntityBits';
 import { db } from '@/lib/db/drizzle';
 import { getUser, currentMembership } from '@/lib/db/queries';
 import {
   workspaces,
-  workspaceMembers,
   projects,
   queues,
   criteria,
@@ -14,8 +19,6 @@ import {
 import { computeMetrics } from '@/lib/core/metrics';
 import { workspaceDefaultsSchema, DEFAULT_POLICY } from '@/lib/core/policy';
 import { resolveQueuePolicy } from '@/lib/core/policy-store';
-import { setQueueSlugOverrideAction } from '@/lib/actions/admin';
-import { SettingRow } from '@/components/admin/EntityBits';
 
 export const dynamic = 'force-dynamic';
 
@@ -35,15 +38,17 @@ export default async function QueueAdminPage({
   const { slug } = await params;
   const sp = await searchParams;
   const me = await getUser();
-  if (!me) redirect('/sign-in');
+  if (!me) redirect('/auth');
   const membership = await currentMembership(me.id);
-  if (!membership) redirect('/sign-in');
+  if (!membership) redirect('/auth');
   const isOperator = membership.role === 'operator' || membership.role === 'admin';
 
   const projectRows = await db
     .select()
     .from(projects)
-    .where(eq(projects.workspaceId, membership.workspaceId));
+    .where(
+      and(eq(projects.workspaceId, membership.workspaceId), isNull(projects.archivedAt))
+    );
   const project = sp.project
     ? projectRows.find((p) => p.slug === sp.project)
     : projectRows[0];
@@ -52,7 +57,9 @@ export default async function QueueAdminPage({
   const envRows = await db
     .select()
     .from(queues)
-    .where(and(eq(queues.projectId, project.id), eq(queues.slug, slug)))
+    .where(
+      and(eq(queues.projectId, project.id), eq(queues.slug, slug), isNull(queues.archivedAt))
+    )
     .orderBy(asc(queues.environment));
   if (envRows.length === 0) notFound();
 
@@ -111,6 +118,14 @@ export default async function QueueAdminPage({
             queue
           </span>
           <div style={{ flex: 1 }} />
+          <EntityActions
+            canEdit={isOperator}
+            name={production.name}
+            onRename={renameQueueAction.bind(null, project.id, slug)}
+            onArchive={archiveQueueAction.bind(null, project.id, slug)}
+            archiveHref={`/admin/projects/${project.slug}`}
+            archiveNoun="queue"
+          />
           <span style={{ fontSize: 12, color: 'var(--slate-500)' }}>You are {membership.role} here</span>
         </div>
 
@@ -125,11 +140,9 @@ export default async function QueueAdminPage({
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8, minWidth: 0 }}>
             <span
               style={{
-                fontSize: 12,
+                fontSize: 13,
                 fontWeight: 600,
-                color: 'var(--slate-500)',
-                textTransform: 'uppercase',
-                letterSpacing: '.04em',
+                color: 'var(--muted-foreground)',
               }}
             >
               Environments
@@ -233,6 +246,7 @@ export default async function QueueAdminPage({
 
             <SettingRow
               label="Round budget"
+              source={resolved.sources.roundBudget}
               value={
                 hasBudgetOverride
                   ? `${resolved.config.roundBudget} rounds · override`
@@ -256,6 +270,7 @@ export default async function QueueAdminPage({
             />
             <SettingRow
               label="Blind-N review"
+              source={resolved.sources.blindN}
               value={
                 hasBlindOverride
                   ? resolved.config.blindN
@@ -305,6 +320,7 @@ export default async function QueueAdminPage({
             </div>
             <SettingRow
               label="LLM judge"
+              source={resolved.sources.judgeEnabled}
               value={
                 hasJudgeOverride
                   ? `${resolved.config.judgeEnabled ? 'on' : 'off'} · override`
@@ -333,6 +349,7 @@ export default async function QueueAdminPage({
             />
             <SettingRow
               label="Judge sampling"
+              source={resolved.sources.judgeSamplingPct}
               value={`${resolved.config.judgeSamplingPct}%${hasJudgeSampleOverride ? ' · override' : ''}`}
               canEdit={isOperator}
               apply={apply}
@@ -345,6 +362,7 @@ export default async function QueueAdminPage({
             />
             <SettingRow
               label="Judge-blind sampling"
+              source={resolved.sources.judgeBlindSamplingPct}
               value={
                 resolved.config.judgeBlindSamplingPct
                   ? `${resolved.config.judgeBlindSamplingPct}% — output withheld permanently`

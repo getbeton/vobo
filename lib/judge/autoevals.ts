@@ -1,5 +1,6 @@
 import { ClosedQA, LLMClassifierFromTemplate } from 'autoevals';
 import type { CriterionScore, JudgeScorer, ScorerInput } from './scorer';
+import { redactPii } from './pii';
 
 /**
  * Runtime scorer: autoevals ClosedQA for the pass/fail, plus a classifier that
@@ -48,7 +49,8 @@ function auth(input: ScorerInput) {
 }
 
 export const autoevalsScorer: JudgeScorer = async (input: ScorerInput) => {
-  const dossier = [input.prompt, input.source].filter(Boolean).join('\n\n');
+  const content = redactPii(input.contentMd);
+  const dossier = redactPii([input.prompt, input.source].filter(Boolean).join('\n\n'));
   const out: CriterionScore[] = [];
 
   for (const criterion of input.criteria) {
@@ -56,7 +58,7 @@ export const autoevalsScorer: JudgeScorer = async (input: ScorerInput) => {
     try {
       const closed = await ClosedQA({
         input: dossier || '(no prompt)',
-        output: input.contentMd,
+        output: content,
         criteria: criteriaText,
         ...auth(input),
       });
@@ -71,7 +73,7 @@ export const autoevalsScorer: JudgeScorer = async (input: ScorerInput) => {
 
       if (!passed) {
         const quoted = await quoteClassifier({
-          output: input.contentMd,
+          output: content,
           criterion: criteriaText,
           ...auth(input),
         });
@@ -79,7 +81,7 @@ export const autoevalsScorer: JudgeScorer = async (input: ScorerInput) => {
           quoted.metadata && quoted.metadata['rationale'] != null
             ? String(quoted.metadata['rationale'])
             : '';
-        quote = extractQuote(rationale, input.contentMd);
+        quote = extractQuote(rationale, content);
         note = rationale || note;
       }
 
@@ -88,7 +90,7 @@ export const autoevalsScorer: JudgeScorer = async (input: ScorerInput) => {
         score,
         passed,
         quote,
-        note: scrub(String(note).slice(0, 2000), input.apiKey),
+        note: redactPii(scrub(String(note).slice(0, 2000), input.apiKey)),
       });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

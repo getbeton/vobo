@@ -22,9 +22,9 @@ export default async function RequestsPage({
 }) {
   const params = await searchParams;
   const user = await getUser();
-  if (!user) redirect('/sign-in');
+  if (!user) redirect('/auth');
   const membership = await currentMembership(user.id);
-  if (!membership) redirect('/sign-in');
+  if (!membership) redirect('/auth');
 
   // VOBO-204, third copy of the defect: this page resolved one project with an
   // unordered findFirst, so every request outside it was invisible. List the

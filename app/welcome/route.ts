@@ -9,7 +9,7 @@ import { ensurePersonalWorkspace } from '@/lib/auth/bootstrap';
  */
 export async function GET() {
   const user = await getUser();
-  if (!user) redirect('/sign-in');
+  if (!user) redirect('/auth');
   await ensurePersonalWorkspace(user.id, user.email);
-  redirect('/queue');
+  redirect('/admin');
 }
