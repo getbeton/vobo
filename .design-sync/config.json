@@ -1,0 +1,21 @@
+{
+  "pkg": "vobo",
+  "globalName": "BetonCouncil",
+  "shape": "package",
+  "srcDir": "components/ui",
+  "tsconfig": "tsconfig.json",
+  "buildCmd": "pnpm dlx @tailwindcss/cli@4.1.7 -i .design-sync/ds-entry.css -o .design-sync/.cache/ds.css",
+  "cssEntry": ".design-sync/.cache/ds.css",
+  "entry": "./.design-sync/no-dist.js",
+  "guidelinesGlob": [
+    "design/beton-council-guidelines.md"
+  ],
+  "overrides": {
+    "DropdownMenu": {
+      "cardMode": "single",
+      "viewport": "420x340"
+    }
+  },
+  "readmeHeader": ".design-sync/conventions.md",
+  "projectId": "5c8dd267-6718-498a-976f-bab76947856c"
+}

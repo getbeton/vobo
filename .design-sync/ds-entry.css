@@ -1,0 +1,8 @@
+/* design-sync CSS entry: compiles the app's own globals.css (Tailwind v4 +
+ * beton-council + tw-animate-css) into one static stylesheet for Claude Design.
+ * Fonts: the app loads Inter/Geist Mono via next/font; here they come from
+ * Google Fonts, the same source the vobo marketing templates use. */
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600;700&display=swap");
+@import "../app/globals.css";
+@source "../components/ui";
+@source "./previews";
