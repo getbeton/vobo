@@ -3,6 +3,9 @@
 import { useState } from 'react';
 import { Loader2 } from 'lucide-react';
 import { clientSignIn } from '@/lib/auth/client';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 /**
  * The preferred email path. Opening the link proves control of the mailbox, so
@@ -74,13 +77,10 @@ export function MagicLinkForm({
       }}
     >
       <div>
-        <label
-          htmlFor="magic-email"
-          className="block text-sm font-medium text-gray-700"
-        >
+        <Label htmlFor="magic-email" className="text-sm font-medium">
           Email
-        </label>
-        <input
+        </Label>
+        <Input
           id="magic-email"
           type="email"
           required
@@ -88,17 +88,13 @@ export function MagicLinkForm({
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           placeholder="you@company.com"
-          className="mt-1 appearance-none rounded-full relative block w-full px-3 py-2 border border-gray-300 placeholder-gray-500 text-gray-900 focus:outline-none focus:ring-orange-500 focus:border-orange-500 focus:z-10 sm:text-sm"
+          className="mt-1"
         />
       </div>
-      <button
-        type="submit"
-        disabled={pending || email.length < 3}
-        className="w-full flex justify-center items-center gap-2 py-2 px-4 border border-transparent rounded-full shadow-sm text-sm font-medium text-white bg-orange-600 hover:bg-orange-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-orange-500 disabled:opacity-60"
-      >
+      <Button type="submit" className="w-full" disabled={pending || email.length < 3}>
         {pending && <Loader2 className="animate-spin h-4 w-4" />}
         {mode === 'signin' ? 'Email me a sign-in link' : 'Email me a link to start'}
-      </button>
+      </Button>
       {error && <p className="text-sm text-red-600">{error}</p>}
     </form>
   );

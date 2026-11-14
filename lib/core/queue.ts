@@ -49,7 +49,8 @@ export interface ResolveQueueResult {
  * hole together.
  *
  * Every query is scoped by workspace id, so no cross-tenant row is reachable
- * even with an exact slug.
+ * even with an exact slug. Archived projects and queues are omitted — they
+ * stay in the table so slugs remain unique and create-review can name them.
  */
 export async function resolveQueue(
   db: DbOrTx,
@@ -60,7 +61,7 @@ export async function resolveQueue(
   const projectRows = await db
     .select()
     .from(projects)
-    .where(eq(projects.workspaceId, input.workspaceId))
+    .where(and(eq(projects.workspaceId, input.workspaceId), isNull(projects.archivedAt)))
     .orderBy(asc(projects.createdAt), asc(projects.id));
 
   const empty = {
@@ -81,7 +82,13 @@ export async function resolveQueue(
   const queueRows = await db
     .select()
     .from(queues)
-    .where(and(inArray(queues.projectId, projectIds), eq(queues.environment, environment)))
+    .where(
+      and(
+        inArray(queues.projectId, projectIds),
+        eq(queues.environment, environment),
+        isNull(queues.archivedAt)
+      )
+    )
     .orderBy(asc(queues.createdAt), asc(queues.id));
 
   const byId = new Map(projectRows.map((p) => [p.id, p]));
@@ -188,7 +195,9 @@ export async function rankedQueue(db: DbOrTx, queueId: string, userId: string): 
     if (rule === 'sla') orderSql.push(sql`${reviewRequests.slaDueAt} asc nulls last`);
     else if (rule === 'priority') orderSql.push(asc(reviewRequests.priority));
     else if (rule === 'judge_confidence')
-      orderSql.push(sql`${reviewRequests.judgeOverallScore} asc nulls last`);
+      orderSql.push(
+        sql`case when ${reviewRequests.judgeBlind} then null else ${reviewRequests.judgeOverallScore} end asc nulls last`
+      );
     else orderSql.push(asc(reviewRequests.createdAt));
   }
 
@@ -213,9 +222,11 @@ export async function rankedQueue(db: DbOrTx, queueId: string, userId: string): 
       sticky ? 'sticky: returning to you' : null,
       request.slaDueAt ? `sla ${request.slaDueAt.toISOString()}` : 'no sla',
       `priority P${request.priority}`,
-      request.judgeOverallScore != null
-        ? `judge ${request.judgeOverallScore.toFixed(2)}`
-        : 'judge —',
+      request.judgeBlind
+        ? null
+        : request.judgeOverallScore != null
+          ? `judge ${request.judgeOverallScore.toFixed(2)}`
+          : 'judge —',
       'fifo',
     ].filter(Boolean);
     return {

@@ -7,6 +7,7 @@ import {
   activityLogs,
   ActivityType,
 } from '@/lib/db/schema';
+import { ensureWorkspaceTemplate } from '@/lib/core/policy-store';
 
 /**
  * Workspace assignment at signup.
@@ -102,6 +103,7 @@ export async function ensurePersonalWorkspace(
     action: ActivityType.CREATE_WORKSPACE,
     ipAddress: '',
   });
+  await ensureWorkspaceTemplate(db, workspace.id);
 
   return workspace.id;
 }

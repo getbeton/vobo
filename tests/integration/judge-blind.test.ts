@@ -5,6 +5,7 @@ import { runOneJudge } from '@/lib/judge/run';
 import { readFindings, untriagedFindings } from '@/lib/findings/read';
 import { ship } from '@/lib/core/verdict';
 import { setCriterionVerdict } from '@/lib/core/annotations';
+import { rankedQueue } from '@/lib/core/queue';
 import { judgeRuns, reviewRequests } from '@/lib/db/schema';
 import { eq } from 'drizzle-orm';
 import type { JudgeScorer } from '@/lib/judge/scorer';
@@ -111,5 +112,24 @@ describe('VOBO-176 / VOBO-199 judge-blind', () => {
     });
     expect(after.withheld).toBe(true);
     expect(after.findings).toEqual([]);
+  });
+
+  it('does not put the judge score in rankRationale on a blind request', async () => {
+    const { request } = await createReview(db, {
+      projectId: fx.projectId,
+      queueSlug: 'q',
+      customerRequestId: 'pico/b/acme/dana/seq3',
+      title: 'Dana',
+      contentMd: BODY,
+    });
+    await db
+      .update(reviewRequests)
+      .set({ judgeOverallScore: 0.12 })
+      .where(eq(reviewRequests.id, request.id));
+    const rows = await rankedQueue(db, fx.queueId, fx.userId);
+    const row = rows.find((r) => r.request.id === request.id);
+    expect(row).toBeTruthy();
+    expect(row!.rankRationale).not.toMatch(/judge 0\.12/);
+    expect(row!.rankRationale).not.toMatch(/judge —/);
   });
 });

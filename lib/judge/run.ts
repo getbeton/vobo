@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import {
   artifactVersions,
   criteria,
@@ -16,9 +16,15 @@ import { detectPii } from './pii';
 import { appendJudgeRecord } from './records';
 import type { JudgeScorer } from './scorer';
 import { autoevalsScorer } from './autoevals';
+import { JUDGE_KEY_ENV, JUDGE_LEASE_MS, resolveJudgeBaseUrl } from './config';
 
 const BACKOFF_SECONDS = [10, 60, 180];
 export const MAX_JUDGE_ATTEMPTS = BACKOFF_SECONDS.length;
+
+/** First ingest stays `judge:${runId}` so existing batches still replay. */
+export function judgeIdempotencyKey(runId: string, rerunSeq: number) {
+  return rerunSeq > 0 ? `judge:${runId}:${rerunSeq}` : `judge:${runId}`;
+}
 
 export interface JudgeDeps {
   scorer?: JudgeScorer;
@@ -31,11 +37,23 @@ function keyFromEnv(env: Record<string, string | undefined>, name: string): stri
   return v && v.length > 0 ? v : null;
 }
 
-export async function dueJudgeRuns(db: Db, limit = 10) {
+export async function dueJudgeRuns(db: Db, limit = 10, now = new Date()) {
+  const leaseCutoff = new Date(now.getTime() - JUDGE_LEASE_MS);
   return db
     .select()
     .from(judgeRuns)
-    .where(inArray(judgeRuns.state, ['pending', 'failed']))
+    .where(
+      or(
+        and(
+          inArray(judgeRuns.state, ['pending', 'failed']),
+          lt(judgeRuns.attempts, MAX_JUDGE_ATTEMPTS)
+        ),
+        and(
+          eq(judgeRuns.state, 'running'),
+          or(isNull(judgeRuns.lastAttemptAt), lt(judgeRuns.lastAttemptAt, leaseCutoff))
+        )
+      )
+    )
     .orderBy(judgeRuns.createdAt)
     .limit(limit);
 }
@@ -47,8 +65,14 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
 
   const [run] = await db.select().from(judgeRuns).where(eq(judgeRuns.id, runId)).limit(1);
   if (!run) return 'skipped' as const;
-  if (!['pending', 'failed'].includes(run.state)) return 'skipped' as const;
-  if (run.lastAttemptAt) {
+  if (['completed', 'not_sampled', 'dead'].includes(run.state)) return 'skipped' as const;
+  if (run.state === 'running') {
+    if (!run.lastAttemptAt || run.lastAttemptAt.getTime() + JUDGE_LEASE_MS > now.getTime()) {
+      return 'skipped' as const;
+    }
+  } else if (!['pending', 'failed'].includes(run.state)) {
+    return 'skipped' as const;
+  } else if (run.lastAttemptAt) {
     const wait = BACKOFF_SECONDS[Math.min(Math.max(run.attempts - 1, 0), BACKOFF_SECONDS.length - 1)];
     if (run.lastAttemptAt.getTime() + wait * 1000 > now.getTime()) return 'skipped' as const;
   }
@@ -65,15 +89,32 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
   if (!request || !version || !pv) return 'skipped' as const;
   const policy = parsePolicyConfig(pv.config);
 
-  await db
+  const [claimed] = await db
     .update(judgeRuns)
     .set({
       state: 'running',
-      attempts: run.attempts + 1,
+      attempts: sql`case when ${judgeRuns.state} = 'running' then ${judgeRuns.attempts} else ${judgeRuns.attempts} + 1 end`,
       lastAttemptAt: now,
       startedAt: run.startedAt ?? now,
     })
-    .where(eq(judgeRuns.id, run.id));
+    .where(
+      and(
+        eq(judgeRuns.id, run.id),
+        eq(judgeRuns.rerunSeq, run.rerunSeq),
+        or(
+          inArray(judgeRuns.state, ['pending', 'failed']),
+          and(
+            eq(judgeRuns.state, 'running'),
+            or(
+              isNull(judgeRuns.lastAttemptAt),
+              lt(judgeRuns.lastAttemptAt, new Date(now.getTime() - JUDGE_LEASE_MS))
+            )
+          )
+        )
+      )
+    )
+    .returning();
+  if (!claimed) return 'skipped' as const;
 
   const project = await db.query.projects.findFirst({
     where: eq(projects.id, request.projectId),
@@ -103,12 +144,13 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
       }
     }
 
-    const apiKey = keyFromEnv(env, policy.judgeKeyEnv);
+    const apiKey = keyFromEnv(env, JUDGE_KEY_ENV);
     if (!apiKey) {
-      throw Object.assign(new Error(`env ${policy.judgeKeyEnv} is not set`), {
+      throw Object.assign(new Error(`env ${JUDGE_KEY_ENV} is not set`), {
         class: 'missing_key',
       });
     }
+    const baseUrl = resolveJudgeBaseUrl(policy.judgeBaseUrl);
 
     const activeCriteria = await db
       .select()
@@ -133,7 +175,7 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
             description: c.description,
           })),
           modelId: policy.judgeModelId,
-          baseUrl: policy.judgeBaseUrl,
+          baseUrl,
           apiKey,
           minScore: policy.judgeMinScore,
         })
@@ -143,13 +185,17 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
     let dropped = 0;
     for (const s of scores) {
       let loc = s.quote ? locateQuote(version.contentMd, s.quote) : null;
-      if (!loc) {
+      if (!loc && !s.passed) {
         dropped += 1;
         const line =
           version.contentMd.split('\n').find((l) => l.trim().length > 0) ??
           version.contentMd.slice(0, Math.min(80, version.contentMd.length));
         const start = Math.max(0, version.contentMd.indexOf(line));
         loc = { startPos: start, endPos: start + line.length };
+      }
+      if (!loc) {
+        dropped += 1;
+        continue;
       }
       const actual = version.contentMd.slice(loc.startPos, loc.endPos);
       findings.push({
@@ -168,7 +214,7 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
         requestId: request.id,
         versionId: version.id,
         producerId: judgeProducer.id,
-        idempotencyKey: `judge:${run.id}`,
+        idempotencyKey: judgeIdempotencyKey(claimed.id, claimed.rerunSeq),
         findings,
         judgeRunId: run.id,
       });
@@ -228,12 +274,12 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
     const errorClass =
       (err as { class?: string }).class ??
       (message.startsWith('provider_') ? 'provider' : 'scorer');
-    const attempts = run.attempts + 1;
+    const attempts = claimed.attempts;
     const dead = attempts >= MAX_JUDGE_ATTEMPTS;
     await db
       .update(judgeRuns)
       .set({
-        state: dead ? 'failed' : 'failed',
+        state: dead ? 'dead' : 'failed',
         errorClass,
         errorMessage: message.slice(0, 500),
         lastAttemptAt: now,
@@ -253,7 +299,7 @@ export async function runOneJudge(db: Db, runId: string, deps: JudgeDeps = {}) {
 }
 
 export async function dispatchDueJudgeRuns(db: Db, deps: JudgeDeps = {}) {
-  const due = await dueJudgeRuns(db);
+  const due = await dueJudgeRuns(db, 10, deps.now?.() ?? new Date());
   let n = 0;
   for (const run of due) {
     const result = await runOneJudge(db, run.id, deps);

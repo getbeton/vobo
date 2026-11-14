@@ -12,6 +12,7 @@ import { reviewRequests, artifactVersions, machineFindings, criteriaVerdicts } f
 import { eq } from 'drizzle-orm';
 import { canEnterTraining } from '@/lib/judge/tenancy';
 import { spanOverlap } from '@/lib/judge/agreement';
+import { GET as getFindings } from '@/app/api/v1/findings/route';
 
 const BODY = `Subject: quick question about your review stack
 
@@ -199,7 +200,11 @@ describe('VOBO-48 MachineFinding contract', () => {
         { criterion: 'voice', passed: true, selector: { quote }, evidence: quote, note: 'voice is fine' },
       ],
     });
-    const res = await confirmFinding(db, { findingId: posted.ids[0], userId: fx.userId });
+    const res = await confirmFinding(db, {
+      requestId: request.id,
+      findingId: posted.ids[0],
+      userId: fx.userId,
+    });
     expect(res.verdict).toBe('pass');
     expect(res.finding.triage).toBe('confirmed');
     const human = await db
@@ -221,7 +226,11 @@ describe('VOBO-48 MachineFinding contract', () => {
         { criterion: 'voice', passed: false, selector: { quote }, evidence: quote, note: 'banned' },
       ],
     });
-    const res = await dismissFinding(db, { findingId: posted.ids[0], userId: fx.userId });
+    const res = await dismissFinding(db, {
+      requestId: request.id,
+      findingId: posted.ids[0],
+      userId: fx.userId,
+    });
     expect(res.verdict).toBe('fail');
     const human = await db
       .select()
@@ -254,6 +263,94 @@ describe('VOBO-48 MachineFinding contract', () => {
     expect(decision.status).toBe('accepted');
   });
 
+  it('a machine fail does not stand in for a scored criterion on approve', async () => {
+    const { request, version } = await seedRequest();
+    const quote = 'We sincerely apologize for the interruption.';
+    await ingestFindings(db, {
+      requestId: request.id,
+      versionId: version.id,
+      producerId,
+      idempotencyKey: 'fail-gate',
+      findings: fx.criterionIds.map((_, i) => ({
+        criterion: i === 0 ? 'voice' : 'factual',
+        passed: false,
+        selector: { quote },
+        evidence: quote,
+        note: 'fail',
+      })),
+    });
+    await expect(
+      ship(db, { requestId: request.id, userId: fx.userId, kind: 'approve' })
+    ).rejects.toMatchObject({ status: 422, code: 'criteria_unscored' });
+  });
+
+  it('untriaged critical PII blocks approve', async () => {
+    const { request, version } = await seedRequest();
+    const quote = 'We sincerely apologize for the interruption.';
+    await ingestFindings(db, {
+      requestId: request.id,
+      versionId: version.id,
+      producerId,
+      idempotencyKey: 'pii-gate',
+      findings: [
+        ...fx.criterionIds.map((_, i) => ({
+          criterion: i === 0 ? 'voice' : 'factual',
+          passed: true,
+          selector: { quote },
+          evidence: quote,
+          note: 'ok',
+        })),
+        {
+          criterion: 'pii',
+          passed: false,
+          severity: 'critical' as const,
+          selector: { quote: 'Dana' },
+          evidence: 'Dana',
+          note: 'Email address in the artifact.',
+        },
+      ],
+    });
+    await expect(
+      ship(db, { requestId: request.id, userId: fx.userId, kind: 'approve' })
+    ).rejects.toMatchObject({ status: 422, code: 'untriaged_findings' });
+  });
+
+  it('triage refuses a finding id from another request', async () => {
+    const a = await seedRequest();
+    const b = await createReview(db, {
+      projectId: fx.projectId,
+      queueSlug: 'q',
+      customerRequestId: 'pico/c1/acme/dana/seq2',
+      title: 'Dana — seq 2',
+      contentMd: BODY,
+    });
+    const bVersion = await db.query.artifactVersions.findFirst({
+      where: eq(artifactVersions.requestId, b.request.id),
+    });
+    const quote = 'We sincerely apologize for the interruption.';
+    const posted = await ingestFindings(db, {
+      requestId: a.request.id,
+      versionId: a.version.id,
+      producerId,
+      idempotencyKey: 'cross',
+      findings: [
+        { criterion: 'voice', passed: true, selector: { quote }, evidence: quote, note: 'ok' },
+      ],
+    });
+    await expect(
+      confirmFinding(db, {
+        requestId: b.request.id,
+        findingId: posted.ids[0],
+        userId: fx.userId,
+      })
+    ).rejects.toMatchObject({ status: 404, code: 'finding_not_found' });
+    const row = await db.query.machineFindings.findFirst({
+      where: eq(machineFindings.id, posted.ids[0]),
+    });
+    expect(row?.triage).toBe('untriaged');
+    expect(bVersion).toBeTruthy();
+  });
+
   it('reviewer read on a blind request returns no findings and no run metadata', async () => {
     const { request, version } = await seedRequest();
     await db
@@ -284,6 +381,33 @@ describe('VOBO-48 MachineFinding contract', () => {
     });
     expect(admin.withheld).toBe(false);
     expect(admin.findings).toHaveLength(1);
+  });
+
+  it('GET /api/v1/findings ignores audience=admin on a pipeline key', async () => {
+    const { request, version } = await seedRequest();
+    await db
+      .update(reviewRequests)
+      .set({ judgeBlind: true })
+      .where(eq(reviewRequests.id, request.id));
+    const quote = 'We sincerely apologize for the interruption.';
+    await ingestFindings(db, {
+      requestId: request.id,
+      versionId: version.id,
+      producerId,
+      idempotencyKey: 'http-blind',
+      findings: [{ criterion: 'voice', selector: { quote }, evidence: quote, note: 'banned' }],
+    });
+    const res = await getFindings(
+      new Request(
+        `http://localhost/api/v1/findings?request_id=${encodeURIComponent(request.customerRequestId)}&audience=admin`,
+        { headers: { authorization: `Bearer ${fx.apiToken}` } }
+      )
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { withheld: boolean; findings: unknown[]; run: unknown };
+    expect(body.withheld).toBe(true);
+    expect(body.findings).toEqual([]);
+    expect(body.run).toBeNull();
   });
 
   it('does not derive a decision from judgeOverallScore', () => {

@@ -1,7 +1,9 @@
 'use client';
 
 import { useState, useTransition } from 'react';
+import { useRouter } from 'next/navigation';
 import type { ActionResult } from '@/lib/actions/review';
+import { slugFromName } from '@/lib/core/slugs';
 
 /**
  * Shared pieces of the entity pages, ported verbatim from
@@ -85,6 +87,7 @@ export interface DropdownItem {
 export function SettingRow({
   label,
   value,
+  source,
   canEdit,
   items,
   apply,
@@ -92,6 +95,8 @@ export function SettingRow({
 }: {
   label: string;
   value: string;
+  /** "inherited from X" / "overridden here" — required on entity policy rows. */
+  source?: string;
   canEdit: boolean;
   items?: DropdownItem[];
   apply?: (patch: Record<string, unknown>) => Promise<ActionResult>;
@@ -113,6 +118,9 @@ export function SettingRow({
     >
       <span style={{ flex: 1, fontSize: 13, color: 'var(--slate-700)' }}>
         {label}
+        {source && (
+          <span style={{ display: 'block', fontSize: 11, color: 'var(--slate-400)' }}>{source}</span>
+        )}
         {err && (
           <span style={{ display: 'block', fontSize: 11, color: 'var(--red-600)' }}>{err}</span>
         )}
@@ -424,6 +432,287 @@ export function MembersCard({
         </div>
       )}
       {msg && <span style={{ fontSize: 11, color: 'var(--green-900)' }}>{msg}</span>}
+      {err && <span style={{ fontSize: 11, color: 'var(--red-600)' }}>{err}</span>}
+    </div>
+  );
+}
+
+const field: React.CSSProperties = {
+  border: '1px solid var(--input)',
+  borderRadius: 6,
+  padding: '8px 10px',
+  fontSize: 13,
+  fontFamily: 'inherit',
+  outline: 'none',
+};
+
+const ghostBtn: React.CSSProperties = {
+  fontSize: 12,
+  color: 'var(--slate-500)',
+  cursor: 'pointer',
+  background: 'none',
+  border: 'none',
+};
+
+/**
+ * Name + slug form. Reviewers never receive `canEdit`. Slug is derived from
+ * the name until the operator types one; a collision is shown as the action's
+ * readable error, not a toast.
+ */
+export function CreateEntityForm({
+  noun,
+  canEdit,
+  submit,
+}: {
+  noun: 'project' | 'queue';
+  canEdit: boolean;
+  submit: (name: string, slug: string) => Promise<ActionResult<{ slug: string }>>;
+}) {
+  const [name, setName] = useState('');
+  const [slug, setSlug] = useState('');
+  const [slugDirty, setSlugDirty] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+  const router = useRouter();
+
+  if (!canEdit) return null;
+
+  const derived = slugFromName(name);
+  const effectiveSlug = slugDirty ? slug : derived;
+  const ready = name.trim().length > 0 && effectiveSlug.length > 0;
+
+  return (
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        border: '1px solid var(--border)',
+        borderRadius: 10,
+        padding: 12,
+        background: '#fff',
+      }}
+    >
+      <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--slate-500)' }}>
+        New {noun}
+      </span>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <input
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            if (!slugDirty) setSlug(slugFromName(e.target.value));
+          }}
+          placeholder="Name"
+          style={{ ...field, flex: '1 1 160px' }}
+        />
+        <input
+          value={slugDirty ? slug : derived}
+          onChange={(e) => {
+            setSlugDirty(true);
+            setSlug(e.target.value);
+          }}
+          placeholder="slug"
+          style={{ ...field, flex: '1 1 140px', color: 'var(--slate-600)' }}
+        />
+        <button
+          type="button"
+          disabled={!ready || pending}
+          onClick={() => {
+            setErr(null);
+            start(async () => {
+              const res = await submit(name, effectiveSlug);
+              if (res.ok) {
+                setName('');
+                setSlug('');
+                setSlugDirty(false);
+                router.refresh();
+              } else setErr(res.error);
+            });
+          }}
+          style={{
+            fontSize: 13,
+            fontWeight: 500,
+            borderRadius: 8,
+            padding: '8px 16px',
+            border: 'none',
+            background: ready ? 'var(--blue-600)' : 'var(--slate-200)',
+            color: ready ? '#fff' : 'var(--slate-500)',
+            cursor: ready ? 'pointer' : 'not-allowed',
+          }}
+        >
+          Create {noun}
+        </button>
+      </div>
+      {err && <span style={{ fontSize: 11, color: 'var(--red-600)' }}>{err}</span>}
+    </div>
+  );
+}
+
+/** Rename and archive on the entity header. Reviewers get nothing. */
+export function EntityActions({
+  canEdit,
+  name,
+  onRename,
+  onArchive,
+  archiveHref,
+  archiveNoun,
+}: {
+  canEdit: boolean;
+  name: string;
+  onRename: (name: string) => Promise<ActionResult>;
+  onArchive: () => Promise<ActionResult>;
+  archiveHref: string;
+  archiveNoun: string;
+}) {
+  const [renaming, setRenaming] = useState(false);
+  const [nextName, setNextName] = useState(name);
+  const [confirming, setConfirming] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+  const router = useRouter();
+
+  if (!canEdit) return null;
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+      {renaming ? (
+        <>
+          <input
+            value={nextName}
+            onChange={(e) => setNextName(e.target.value)}
+            style={{ ...field, padding: '4px 8px', width: 180 }}
+          />
+          <button
+            type="button"
+            disabled={pending || !nextName.trim()}
+            onClick={() => {
+              setErr(null);
+              start(async () => {
+                const res = await onRename(nextName);
+                if (res.ok) {
+                  setRenaming(false);
+                  router.refresh();
+                } else setErr(res.error);
+              });
+            }}
+            style={ghostBtn}
+          >
+            Save
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setRenaming(false);
+              setNextName(name);
+            }}
+            style={ghostBtn}
+          >
+            Cancel
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={() => {
+            setNextName(name);
+            setRenaming(true);
+            setConfirming(false);
+          }}
+          style={ghostBtn}
+        >
+          Rename
+        </button>
+      )}
+      {confirming ? (
+        <>
+          <span style={{ fontSize: 12, color: 'var(--slate-500)' }}>
+            Hide this {archiveNoun}?
+          </span>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => {
+              setErr(null);
+              start(async () => {
+                const res = await onArchive();
+                if (res.ok) router.push(archiveHref);
+                else setErr(res.error);
+              });
+            }}
+            style={{ ...ghostBtn, color: 'var(--red-600)' }}
+          >
+            Archive
+          </button>
+          <button type="button" onClick={() => setConfirming(false)} style={ghostBtn}>
+            Cancel
+          </button>
+        </>
+      ) : (
+        <button
+          type="button"
+          onClick={() => {
+            setConfirming(true);
+            setRenaming(false);
+          }}
+          style={ghostBtn}
+        >
+          Archive
+        </button>
+      )}
+      {err && <span style={{ fontSize: 11, color: 'var(--red-600)' }}>{err}</span>}
+    </span>
+  );
+}
+
+export function NewTemplateForm({
+  create,
+}: {
+  create: (name: string) => Promise<ActionResult>;
+}) {
+  const [name, setName] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+  const [pending, start] = useTransition();
+  return (
+    <div style={{ display: 'flex', gap: 8, paddingTop: 8 }}>
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="New template name"
+        style={{
+          flex: 1,
+          border: '1px solid var(--input)',
+          borderRadius: 6,
+          padding: '6px 10px',
+          fontSize: 13,
+          fontFamily: 'inherit',
+          outline: 'none',
+        }}
+      />
+      <button
+        type="button"
+        disabled={!name.trim() || pending}
+        onClick={() => {
+          setErr(null);
+          start(async () => {
+            const res = await create(name.trim());
+            if (res.ok) setName('');
+            else setErr(res.error);
+          });
+        }}
+        style={{
+          fontSize: 12,
+          fontWeight: 500,
+          borderRadius: 8,
+          padding: '6px 12px',
+          border: 'none',
+          background: name.trim() ? 'var(--blue-600)' : 'var(--slate-200)',
+          color: name.trim() ? '#fff' : 'var(--slate-500)',
+          cursor: name.trim() ? 'pointer' : 'not-allowed',
+        }}
+      >
+        Create template
+      </button>
       {err && <span style={{ fontSize: 11, color: 'var(--red-600)' }}>{err}</span>}
     </div>
   );

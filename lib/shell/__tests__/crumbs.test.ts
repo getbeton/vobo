@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   readSelection,
   projectTarget,
@@ -7,6 +9,9 @@ import {
   optionsWithSelection,
   selectedLabel,
   selectProject,
+  queueListHref,
+  reviewHref,
+  mergeReviewSearch,
 } from '../crumbs';
 
 const PICO = {
@@ -128,5 +133,80 @@ describe('project selection follows the resolver', () => {
 
   it('returns null when the workspace has no projects', () => {
     expect(selectProject([], readSelection({ queue: 'x' }))).toBeNull();
+  });
+});
+
+const CRO = {
+  projectSlug: 'pico',
+  queueSlug: 'pico-cro-w2b-cold-email',
+  environment: 'production' as const,
+};
+
+describe('VOBO-269: review and queue href helpers', () => {
+  it('queueListHref is the three-param list, never bare /queue', () => {
+    expect(queueListHref(CRO)).toBe(
+      '/queue?project=pico&queue=pico-cro-w2b-cold-email&env=production'
+    );
+  });
+
+  it('reviewHref carries the same three params', () => {
+    expect(reviewHref('abc', CRO)).toBe(
+      '/review/abc?project=pico&queue=pico-cro-w2b-cold-email&env=production'
+    );
+  });
+
+  it('reviewHref is the workspace, never /compare, never l/r', () => {
+    expect(reviewHref('abc', CRO)).toBe(
+      '/review/abc?project=pico&queue=pico-cro-w2b-cold-email&env=production'
+    );
+    expect(reviewHref('abc', CRO)).not.toContain('/compare');
+    expect(reviewHref('abc', CRO)).not.toMatch(/[?&]l=/);
+    expect(reviewHref('abc', CRO)).not.toMatch(/[?&]r=/);
+  });
+
+  it('mergeReviewSearch fills missing project/queue/env and drops l/r', () => {
+    const filled = mergeReviewSearch({ l: '1', r: '2' }, CRO);
+    expect(filled.changed).toBe(true);
+    expect(filled.search).toBe('project=pico&queue=pico-cro-w2b-cold-email&env=production');
+    expect(filled.search).not.toContain('l=');
+    expect(filled.search).not.toContain('r=');
+  });
+
+  it('mergeReviewSearch strips leftover l/r even when the three params are set', () => {
+    const filled = mergeReviewSearch(
+      { project: 'pico', queue: 'pico-cro-w2b-cold-email', env: 'production', l: '1', r: '2' },
+      CRO
+    );
+    expect(filled.changed).toBe(true);
+    expect(filled.search).toBe('project=pico&queue=pico-cro-w2b-cold-email&env=production');
+  });
+
+  it('mergeReviewSearch is a no-op when the three params are set and l/r are absent', () => {
+    const filled = mergeReviewSearch(
+      { project: 'pico', queue: 'pico-cro-w2b-cold-email', env: 'production' },
+      CRO
+    );
+    expect(filled.changed).toBe(false);
+    expect(filled.search).toBe('project=pico&queue=pico-cro-w2b-cold-email&env=production');
+  });
+
+  it('bare /queue default is unchanged: empty selection still falls to the first project', () => {
+    expect(selectProject([ACME, PICO], readSelection({}))?.slug).toBe('acme');
+  });
+});
+
+describe('VOBO-287: compare URL is the workspace', () => {
+  const root = join(__dirname, '../../..');
+
+  it('a compare bookmark with l/r becomes the three-param workspace href', () => {
+    expect(reviewHref('f8618a31-55bc-454e-8259-404b46770047', CRO)).toBe(
+      '/review/f8618a31-55bc-454e-8259-404b46770047?project=pico&queue=pico-cro-w2b-cold-email&env=production'
+    );
+  });
+
+  it('the request page has no Open compare link', () => {
+    const src = readFileSync(join(root, 'app/(app)/requests/[id]/page.tsx'), 'utf8');
+    expect(src).not.toMatch(/Open compare/);
+    expect(src).not.toMatch(/\/compare/);
   });
 });

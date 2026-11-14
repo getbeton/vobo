@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
-import { and, eq, gte, inArray } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull } from 'drizzle-orm';
 import { db } from '@/lib/db/drizzle';
 import { getUser, currentMembership } from '@/lib/db/queries';
 import {
@@ -19,8 +19,9 @@ import {
   setMemberRoleAction,
   removeMemberAction,
   inviteMemberAction,
+  createProjectAction,
 } from '@/lib/actions/admin';
-import { StatStrip, SettingRow, MembersCard } from '@/components/admin/EntityBits';
+import { StatStrip, SettingRow, MembersCard, CreateEntityForm } from '@/components/admin/EntityBits';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,13 +52,13 @@ function initials(name: string, email: string) {
  */
 export default async function WorkspacePage() {
   const me = await getUser();
-  if (!me) redirect('/sign-in');
+  if (!me) redirect('/auth');
   const membership = await currentMembership(me.id);
-  if (!membership) redirect('/sign-in');
+  if (!membership) redirect('/auth');
   const ws = await db.query.workspaces.findFirst({
     where: eq(workspaces.id, membership.workspaceId),
   });
-  if (!ws) redirect('/sign-in');
+  if (!ws) redirect('/auth');
 
   const isOperator = membership.role === 'operator' || membership.role === 'admin';
   const isAdmin = membership.role === 'admin';
@@ -65,7 +66,7 @@ export default async function WorkspacePage() {
   const projectRows = await db
     .select()
     .from(projects)
-    .where(eq(projects.workspaceId, ws.id));
+    .where(and(eq(projects.workspaceId, ws.id), isNull(projects.archivedAt)));
   const projectIds = projectRows.map((p) => p.id);
 
   const requests = projectIds.length
@@ -82,7 +83,7 @@ export default async function WorkspacePage() {
     ? await db
         .select({ id: queues.id, projectId: queues.projectId, slug: queues.slug })
         .from(queues)
-        .where(inArray(queues.projectId, projectIds))
+        .where(and(inArray(queues.projectId, projectIds), isNull(queues.archivedAt)))
     : [];
 
   const metrics = computeMetrics(requests);
@@ -169,14 +170,30 @@ export default async function WorkspacePage() {
           }}
         >
           <div style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+            {isOperator && (
+              <Link
+                href="/admin/escalations"
+                style={{
+                  ...card,
+                  textDecoration: 'none',
+                  color: 'inherit',
+                  borderColor: 'var(--amber-500)',
+                  background: 'var(--amber-50)',
+                }}
+              >
+                <span style={{ fontWeight: 600, fontSize: 14 }}>Escalations</span>
+                <span style={{ fontSize: 13, color: 'var(--slate-600)' }}>
+                  Last-round Reject flags a request and the reviewer moves on.
+                  The operator inbox is not built yet (VOBO-300).
+                </span>
+              </Link>
+            )}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <span
                 style={{
-                  fontSize: 12,
+                  fontSize: 13,
                   fontWeight: 600,
-                  color: 'var(--slate-500)',
-                  textTransform: 'uppercase',
-                  letterSpacing: '.04em',
+                  color: 'var(--muted-foreground)',
                 }}
               >
                 Projects
@@ -232,6 +249,11 @@ export default async function WorkspacePage() {
                   No projects in this workspace yet.
                 </div>
               )}
+              <CreateEntityForm
+                noun="project"
+                canEdit={isOperator}
+                submit={createProjectAction.bind(null, ws.id)}
+              />
             </div>
 
             <MembersCard
@@ -300,6 +322,7 @@ export default async function WorkspacePage() {
               <span style={{ fontSize: 13, fontWeight: 600 }}>Workspace defaults</span>
               <SettingRow
                 label="SLA policy"
+                source="overridden here"
                 value={slaLabel}
                 canEdit={isOperator}
                 apply={applyDefaults}
@@ -313,6 +336,7 @@ export default async function WorkspacePage() {
               />
               <SettingRow
                 label="Round budget"
+                source="overridden here"
                 value={`${budget} rounds`}
                 canEdit={isOperator}
                 apply={applyDefaults}
@@ -324,6 +348,7 @@ export default async function WorkspacePage() {
               />
               <SettingRow
                 label="Blind-N review"
+                source="overridden here"
                 value={blindN ? `blind-${blindN} by default` : 'off by default'}
                 canEdit={isOperator}
                 apply={applyDefaults}

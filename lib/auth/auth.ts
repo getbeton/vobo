@@ -16,6 +16,24 @@ const googleId = process.env.GOOGLE_CLIENT_ID;
 const googleSecret = process.env.GOOGLE_CLIENT_SECRET;
 export const googleAuthEnabled = Boolean(googleId && googleSecret);
 
+/** Custom domain + Railway hostname both have to pass Better Auth's origin check. */
+function publicOrigins(): string[] {
+  const raw = [
+    process.env.BETTER_AUTH_URL,
+    process.env.BETTER_AUTH_TRUSTED_ORIGINS,
+    process.env.RAILWAY_PUBLIC_DOMAIN,
+    process.env.RAILWAY_STATIC_URL,
+    process.env.RAILWAY_SERVICE_VOBO_WEB_URL,
+  ].flatMap((v) => (v ? v.split(',') : []));
+  const origins = new Set<string>();
+  for (const item of raw) {
+    const trimmed = item.trim().replace(/\/$/, '');
+    if (!trimmed) continue;
+    origins.add(trimmed.startsWith('http') ? trimmed : `https://${trimmed}`);
+  }
+  return [...origins];
+}
+
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
     provider: 'pg',
@@ -23,6 +41,7 @@ export const auth = betterAuth({
   }),
   secret: process.env.BETTER_AUTH_SECRET ?? process.env.AUTH_SECRET,
   baseURL: process.env.BETTER_AUTH_URL,
+  trustedOrigins: publicOrigins(),
   emailAndPassword: {
     enabled: true,
     // Ownership of the address must be proven before the account is usable.

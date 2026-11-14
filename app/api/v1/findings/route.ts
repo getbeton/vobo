@@ -153,11 +153,10 @@ export async function GET(req: Request) {
     });
     if (!version) throw new ApiProblem(404, 'version_not_found', 'Version not found');
 
-    const audience = url.searchParams.get('audience') === 'admin' ? 'admin' : 'reviewer';
     const read = await readFindings(db, {
       requestId: request.id,
       versionId: version.id,
-      audience,
+      audience: 'reviewer',
     });
     return Response.json({
       withheld: read.withheld,

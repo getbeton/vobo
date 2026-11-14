@@ -16,10 +16,10 @@ import {
 } from '@/lib/core/failing';
 
 /**
- * VOBO-237. Escalate is gone from the UI. A reject at round == roundBudget
- * ships as a normal reject and flags the request for an operator. Approve at
- * the wall still accepts and does not flag. The engine keeps the escalate
- * kind because the four-state pull contract publishes it.
+ * VOBO-237 / last-round escalate. Escalate is gone from the reviewer UI. A
+ * reject at round >= roundBudget sets status escalated, flags budget_exhausted,
+ * and the reviewer moves on. Approve at the wall still accepts and does not
+ * flag. The engine keeps the escalate kind for explicit operator rulings.
  */
 describe('the round-budget wall after Escalate leaves the UI', () => {
   let fixtures: Awaited<ReturnType<typeof createFixtures>>;
@@ -60,17 +60,17 @@ describe('the round-budget wall after Escalate leaves the UI', () => {
     await client.end();
   });
 
-  it('ships a reject at the wall, flags the request, and keeps acceptedHash null', async () => {
+  it('ships a last-round reject as escalated, flags the request, and keeps acceptedHash null', async () => {
     await scoreAll(requestId, 'fail');
     const res = await ship(db, {
       requestId,
       userId: fixtures.userId,
       kind: 'reject_rerun',
     });
-    expect(res.status).toBe('rejected');
+    expect(res.status).toBe('escalated');
 
     const rows = await db.select().from(reviewRequests).where(eq(reviewRequests.id, requestId));
-    expect(rows[0].status).toBe('rejected');
+    expect(rows[0].status).toBe('escalated');
     expect(rows[0].acceptedHash).toBeNull();
     expect(rows[0].budgetExhaustedAt).toBeInstanceOf(Date);
     expect(rows[0].budgetExhaustedBy).toBe(fixtures.userId);
@@ -83,21 +83,53 @@ describe('the round-budget wall after Escalate leaves the UI', () => {
     expect(payload.round).toBe(1);
     expect(payload.round_budget).toBe(1);
     expect(payload.kind).toBe('reject_rerun');
+    expect(chain.find((r) => r.type === 'decision.escalated')).toBeTruthy();
+    expect(chain.find((r) => r.type === 'decision.rejected')).toBeUndefined();
 
     const { verification } = await getVerifiedChain(db, requestId);
     expect(verification.ok).toBe(true);
   });
 
-  it('refuses a further reject once flagged — the loop is over', async () => {
+  it('last-round reject does not require scored criteria', async () => {
+    const res = await ship(db, {
+      requestId,
+      userId: fixtures.userId,
+      kind: 'reject_rerun',
+    });
+    expect(res.status).toBe('escalated');
+    const chain = await db.select().from(events).where(eq(events.requestId, requestId));
+    const escalated = chain.find((r) => r.type === 'decision.escalated');
+    const payload = escalated!.payload as Record<string, unknown>;
+    expect(payload.reason).toBe('round_budget_exhausted');
+    expect(payload.via).toBe('last_round_reject');
+    expect(payload.criteria_skipped).toBe(true);
+  });
+
+  it('approve_edited still closes after last-round escalate', async () => {
+    await scoreAll(requestId, 'fail');
+    await ship(db, { requestId, userId: fixtures.userId, kind: 'reject_rerun' });
+    const closed = await ship(db, {
+      requestId,
+      userId: fixtures.userId,
+      kind: 'approve_edited',
+      editedContentMd: 'Operator close.',
+    });
+    expect(closed.status).toBe('accepted');
+    const rows = await db.select().from(reviewRequests).where(eq(reviewRequests.id, requestId));
+    expect(rows[0].status).toBe('accepted');
+    expect(rows[0].acceptedHash).toBeTruthy();
+  });
+
+  it('refuses a further reject once escalated — the loop is over', async () => {
     await scoreAll(requestId, 'fail');
     await ship(db, { requestId, userId: fixtures.userId, kind: 'reject_rerun' });
     await expect(
       ship(db, { requestId, userId: fixtures.userId, kind: 'reject_rerun' })
-    ).rejects.toMatchObject({ code: 'round_budget_exceeded' });
+    ).rejects.toMatchObject({ code: 'terminal_status' });
 
     const rows = await db.select().from(reviewRequests).where(eq(reviewRequests.id, requestId));
     expect(rows[0].budgetExhaustedAt).toBeInstanceOf(Date);
-    expect(rows[0].status).toBe('rejected');
+    expect(rows[0].status).toBe('escalated');
   });
 
   it('lets approve through at the wall and does not flag', async () => {

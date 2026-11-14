@@ -9,7 +9,9 @@ import {
   History,
   Activity,
   Settings,
+  UserRound,
 } from 'lucide-react';
+import { signOut } from '@/app/(login)/actions';
 import {
   readSelection,
   projectTarget,
@@ -18,6 +20,7 @@ import {
   optionsWithSelection,
   selectedLabel,
   selectProject,
+  queueListHref,
   type ProjectOption,
 } from '@/lib/shell/crumbs';
 
@@ -45,20 +48,23 @@ export interface ShellData {
   /** Every project in the workspace, deterministically ordered. */
   projects: ShellProject[];
   alerts: Array<{ id: string; text: string; kind: string; at: string }>;
+  user: { name: string; email: string };
 }
 
 const chip: React.CSSProperties = {
   display: 'inline-flex',
   alignItems: 'center',
   gap: 6,
+  height: 32,
   border: '1px solid var(--border)',
-  borderRadius: 8,
-  padding: '6px 10px',
-  fontSize: 13,
+  borderRadius: 6,
+  padding: '0 12px',
+  fontSize: 14,
   fontWeight: 500,
+  lineHeight: 1,
   background: '#fff',
   cursor: 'pointer',
-  color: 'var(--slate-600)',
+  color: 'var(--slate-700)',
 };
 
 function CrumbMenu({
@@ -169,11 +175,10 @@ const KEYMAP: Array<[string, string]> = [
   ['J / K', 'Move focus through rows and findings'],
   ['Enter / N', 'Claim next / open focused item'],
   ['R', 'Release your lease'],
-  ['A', 'Anchor a correction on the selection'],
-  ['C / D', 'Confirm / dismiss (with reason)'],
-  ['1–5', 'Score the focused criterion'],
-  ['P / O / X', 'Persists / re-pin / retire (compare rail)'],
-  ['⌘Enter', 'Open the pre-submit sheet / ship'],
+  ['type', 'Type to suggest a replacement on the selection'],
+  ['⌘⇧M', 'Comment on the selection'],
+  ['C / P / O / X', 'Resolved / persists / re-pin / retire on a focused prior finding'],
+  ['⌘↵', 'Save composer or ship'],
   ['Esc', 'Close composer or sheet'],
   ['?', 'This sheet'],
 ];
@@ -181,6 +186,7 @@ const KEYMAP: Array<[string, string]> = [
 export function AppShell({ data, children }: { data: ShellData; children: ReactNode }) {
   const [bellOpen, setBellOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [userOpen, setUserOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
 
@@ -192,18 +198,12 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
       if (e.key === 'Escape') {
         setSheetOpen(false);
         setBellOpen(false);
+        setUserOpen(false);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-
-  const railItems = [
-    { icon: ListChecks, title: 'Reviewer queue', href: '/queue' },
-    { icon: History, title: 'Request timeline', href: '/requests' },
-    { icon: Activity, title: 'Convergence dashboard — coming soon', href: null as string | null },
-    { icon: Settings, title: 'Workspace, project & queue pages', href: '/admin' },
-  ];
 
   const searchParams = useSearchParams();
 
@@ -214,6 +214,23 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
     queue: searchParams.get('queue'),
     env: searchParams.get('env'),
   });
+
+  const onReview = pathname.startsWith('/review/');
+  const reviewQueueHref =
+    onReview && selection.projectSlug && selection.queueSlug
+      ? queueListHref({
+          projectSlug: selection.projectSlug,
+          queueSlug: selection.queueSlug,
+          environment: selection.environment,
+        })
+      : '/queue';
+
+  const railItems = [
+    { icon: ListChecks, title: 'Reviewer queue', href: reviewQueueHref },
+    { icon: History, title: 'Request timeline', href: '/requests' },
+    { icon: Activity, title: 'Convergence dashboard — coming soon', href: null as string | null },
+    { icon: Settings, title: 'Workspace, project & queue pages', href: '/admin' },
+  ];
 
   const selectedProject = selectProject(data.projects, selection);
 
@@ -271,7 +288,7 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
         }}
       >
         <Link
-          href="/queue"
+          href={reviewQueueHref}
           style={{ fontWeight: 600, fontSize: 15, letterSpacing: '-.01em', color: 'inherit', textDecoration: 'none' }}
         >
           Vobo
@@ -415,6 +432,82 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
               </div>
             )}
           </span>
+          <span style={{ position: 'relative' }}>
+            <button
+              type="button"
+              title="Account"
+              onClick={() => {
+                setUserOpen((o) => !o);
+                setBellOpen(false);
+              }}
+              style={{ ...chip, width: 32, height: 32, padding: 0, justifyContent: 'center' }}
+            >
+              <UserRound size={15} />
+            </button>
+            {userOpen && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: 40,
+                  right: 0,
+                  width: 240,
+                  background: '#fff',
+                  border: '1px solid var(--border)',
+                  borderRadius: 10,
+                  boxShadow: 'var(--shadow-lg)',
+                  padding: 10,
+                  zIndex: 70,
+                }}
+              >
+                <div style={{ fontWeight: 600, fontSize: 13, padding: '4px 6px 2px' }}>
+                  {data.user.name || data.user.email}
+                </div>
+                <div
+                  style={{
+                    fontSize: 12,
+                    color: 'var(--slate-500)',
+                    padding: '0 6px 8px',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  {data.user.email}
+                </div>
+                <Link
+                  href="/admin/account"
+                  onClick={() => setUserOpen(false)}
+                  style={{
+                    display: 'block',
+                    fontSize: 13,
+                    padding: '8px 6px',
+                    borderTop: '1px solid var(--slate-100)',
+                    color: 'inherit',
+                    textDecoration: 'none',
+                  }}
+                >
+                  Password and account
+                </Link>
+                <form action={signOut}>
+                  <button
+                    type="submit"
+                    style={{
+                      display: 'block',
+                      width: '100%',
+                      textAlign: 'left',
+                      fontSize: 13,
+                      padding: '8px 6px',
+                      border: 0,
+                      background: 'none',
+                      cursor: 'pointer',
+                      color: 'var(--red-700)',
+                    }}
+                  >
+                    Sign out
+                  </button>
+                </form>
+              </div>
+            )}
+          </span>
         </div>
       </div>
 
@@ -433,7 +526,9 @@ export function AppShell({ data, children }: { data: ShellData; children: ReactN
           }}
         >
           {railItems.map(({ icon: Icon, title, href }) => {
-            const active = href && pathname.startsWith(href);
+            const active =
+              href &&
+              (pathname.startsWith(href) || (href === '/admin' && pathname === '/'));
             const inner = (
               <span
                 title={title}

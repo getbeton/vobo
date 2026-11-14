@@ -18,9 +18,9 @@ export default async function ArchivedPage({
 }) {
   const params = await searchParams;
   const user = await getUser();
-  if (!user) redirect('/sign-in');
+  if (!user) redirect('/auth');
   const membership = await currentMembership(user.id);
-  if (!membership) redirect('/sign-in');
+  if (!membership) redirect('/auth');
 
   // Same boundary as archive itself. A reviewer has no business here.
   if (membership.role !== 'operator' && membership.role !== 'admin') return <NoAccess />;

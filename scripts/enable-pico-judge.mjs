@@ -9,7 +9,6 @@ if (!url) {
 }
 
 const sql = postgres(url, { max: 1 });
-const keyEnv = process.env.VOBO_JUDGE_KEY_ENV ?? 'VOBO_JUDGE_OPENAI_API_KEY';
 const model = process.env.VOBO_JUDGE_MODEL ?? 'gpt-4o-mini';
 
 try {
@@ -30,7 +29,6 @@ try {
       judgeSamplingPct: 100,
       judgeBlindSamplingPct: 0,
       judgeModelId: model,
-      judgeKeyEnv: keyEnv,
       piiDetection: true,
     };
     await sql`update queues set policy_overrides = ${sql.json(overrides)} where id = ${q.id}`;
